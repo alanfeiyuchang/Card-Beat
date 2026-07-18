@@ -1,0 +1,25 @@
+# Python virtualenv & caches
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Model weights (ultralytics/HF download these on demand)
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# Pulled source videos + generated media (large binaries)
+resources/videos/*
+!resources/videos/.gitkeep
+
+# Exports
+*.zip
+
+# Node
+node_modules/
+
+# OS / editor
+.DS_Store
+Thumbs.db

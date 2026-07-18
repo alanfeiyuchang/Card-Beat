@@ -1,0 +1,10 @@
+{
+  "name": "card-beat",
+  "version": "0.1.0",
+  "description": "Sleight-of-hand clip editor: crop, toon-shade, background-key, beat-time and export video clips for a card rhythm game.",
+  "type": "module",
+  "scripts": {
+    "start": "npx --yes serve . -l 5173",
+    "dev": "npx --yes serve . -l 5173"
+  }
+}
