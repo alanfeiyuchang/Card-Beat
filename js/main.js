@@ -3,10 +3,11 @@ import { Pipeline } from './pipeline.js';
 import { Timeline } from './timeline.js';
 import { CropTool } from './crop.js';
 import { History } from './history.js';
-import { loadWaveform, TapTempo } from './audio.js';
+import { loadWaveform } from './audio.js';
 import { exportPngSequence, exportWebm } from './exporters.js';
 import { Layers, STYLE_FIELDS } from './layers.js';
 import { loadSettings, saveSettings, saveSettingsDebounced, loadPresets, savePreset, deletePreset } from './persist.js';
+import { activeAnchors, segments, rateAt, srcToOut, outputDuration, beatPoints, hasBeatMap } from './beatmap.js';
 
 const $ = id => document.getElementById(id);
 const hexToRgb = h => [parseInt(h.slice(1,3),16)/255, parseInt(h.slice(3,5),16)/255, parseInt(h.slice(5,7),16)/255];
@@ -18,11 +19,11 @@ try { pipeline = new Pipeline(canvas); }
 catch (e) { alert(e.message); throw e; }
 
 const timeline = new Timeline($('tlcanvas'), {
-  onSeek: t => { if (state.video) state.video.currentTime = t; },
+  onSeek: t => { if (state.video) { state.video.currentTime = t; lastBeatCheckT = t; } },
   onCommit: () => history.commit(),
+  onAnchorsChanged: () => renderAnchors(),
 });
 const crop = new CropTool($('cropOverlay'), $('cropBox'), canvas, { onCommit: () => history.commit() });
-const tap = new TapTempo();
 const layers = new Layers();
 let samPoints = {};       // concept -> [{u, v, px, py}]  (u/v output-uv for dots, px/py source-pixel for SAM)
 let samPromptTime = {};   // concept -> source time (s) of the frame its points were marked on
@@ -46,9 +47,10 @@ function syncUI() {
   $('outlineThick').value = state.outlineThick;
   $('outlineColor').value = rgbToHex(state.outlineColor);
   $('sat').value = state.sat; $('bright').value = state.bright; $('contrast').value = state.contrast;
-  $('bpm').value = state.bpm; $('beatOffset').value = state.beatOffset; $('beatsPerBar').value = state.beatsPerBar;
+  $('beatLen').value = state.beatLen; $('metronome').checked = state.metronome;
   $('rate').value = state.playbackRate; $('rateLabel').textContent = state.playbackRate.toFixed(2) + '×';
   $('fps').value = state.fps;
+  updateBpmEq(); renderAnchors();
   crop.layout(); timeline.draw(); updateTrimLabel();
 }
 // restore persisted settings into state before the first UI sync, then reflect them
@@ -84,11 +86,41 @@ function renderComposited(t) {
   }
   if (first) pipeline.clearCanvas();
 }
+// ---- metronome (Web Audio click at beat points) ----
+let actx = null;
+let lastBeatCheckT = null;
+function beatClick(accent) {
+  try {
+    actx ||= new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.value = accent ? 1568 : 1046;      // G6 accent, C6 regular
+    o.connect(g); g.connect(actx.destination);
+    const t = actx.currentTime;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(accent ? 0.5 : 0.28, t + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+    o.start(t); o.stop(t + 0.1);
+  } catch {}
+}
+function tickMetronome(curT) {
+  if (!state.metronome || lastBeatCheckT === null) { lastBeatCheckT = curT; return; }
+  if (curT < lastBeatCheckT) { lastBeatCheckT = curT; return; }  // looped/seeked backward
+  for (const b of beatPoints())
+    if (b.src > lastBeatCheckT && b.src <= curT) beatClick(b.accent);
+  lastBeatCheckT = curT;
+}
+
 function frame() {
   if (state.video && state.video.readyState >= 2) {
-    if (layers.has()) renderComposited(state.video.currentTime);
+    const t = state.video.currentTime;
+    if (state.playing) {
+      // beat-anchored segments play at their own speed so anchors land on beats
+      state.video.playbackRate = Math.min(8, Math.max(0.1, state.playbackRate * rateAt(t)));
+      tickMetronome(t);
+    }
+    if (layers.has()) renderComposited(t);
     else pipeline.render(state.video, state);
-    timeline.setPlayhead(state.video.currentTime);
+    timeline.setPlayhead(t);
     updateTimeLabel();
   }
   requestAnimationFrame(frame);
@@ -99,7 +131,12 @@ function updateTimeLabel() {
   if (!state.video) { $('timeLabel').textContent = '0.00 / 0.00'; return; }
   const rel = Math.max(0, state.video.currentTime - state.trimIn);
   const dur = Math.max(0.001, state.trimOut - state.trimIn);
-  $('timeLabel').textContent = `${rel.toFixed(2)} / ${dur.toFixed(2)}`;
+  let txt = `${rel.toFixed(2)} / ${dur.toFixed(2)}`;
+  if (hasBeatMap()) {
+    // also show beat-time: where this frame lands in the retimed output
+    txt += `  ♩ ${srcToOut(state.video.currentTime).toFixed(2)} / ${outputDuration().toFixed(2)}`;
+  }
+  $('timeLabel').textContent = txt;
   $('scrub').value = Math.round(Math.max(0, Math.min(1, rel / dur)) * 1000);
 }
 
@@ -119,6 +156,8 @@ async function openVideo(url, name, audioBlob) {
   state.duration = v.duration;
   state.trimIn = 0; state.trimOut = v.duration;
   state.crop = { x: 0, y: 0, w: 1, h: 1 };
+  state.anchors = [];                 // beat anchors are clip-specific
+  renderAnchors();
   // default output keeps source aspect, capped to 512 on the long edge
   const long = Math.max(v.videoWidth, v.videoHeight);
   const scale = Math.min(1, 512 / long);
@@ -146,20 +185,38 @@ $('videoInput').addEventListener('change', async e => {
   if (!file) return;
   await openVideo(URL.createObjectURL(file), file.name, file);
 });
+// On desktop, Import video uses the native picker so the Python side (SAM) gets the real
+// file path — one button opens the clip for both the editor and segmentation.
+$('importBtn').addEventListener('click', e => {
+  if (!IS_DESKTOP()) return;                     // browser: fall through to the file input
+  e.preventDefault();
+  pickVideoDesktop().catch(err => { $('fileName').textContent = 'open failed: ' + err.message; });
+});
 
 // ---------- transport ----------
-$('playBtn').addEventListener('click', () => {
+function togglePlay() {
   const v = state.video; if (!v) return;
   if (state.playing) { v.pause(); state.playing = false; $('playBtn').textContent = '▶'; }
   else {
     if (v.currentTime < state.trimIn || v.currentTime >= state.trimOut) v.currentTime = state.trimIn;
-    v.playbackRate = state.playbackRate; v.play(); state.playing = true; $('playBtn').textContent = '❚❚';
+    lastBeatCheckT = v.currentTime;   // don't fire clicks for beats behind the playhead
+    v.playbackRate = state.playbackRate * rateAt(v.currentTime);
+    v.play(); state.playing = true; $('playBtn').textContent = '❚❚';
   }
-});
+}
+$('playBtn').addEventListener('click', togglePlay);
 $('scrub').addEventListener('input', e => {
   if (!state.video) return;
   state.video.currentTime = state.trimIn + (e.target.value / 1000) * (state.trimOut - state.trimIn);
+  lastBeatCheckT = state.video.currentTime;
 });
+function stepFrame(dir, big) {
+  const v = state.video; if (!v) return;
+  const step = (1 / (state.fps || 30)) * (big ? 10 : 1);
+  v.pause(); state.playing = false; $('playBtn').textContent = '▶';
+  v.currentTime = Math.max(state.trimIn, Math.min(state.trimOut, v.currentTime + dir * step));
+  lastBeatCheckT = v.currentTime;
+}
 
 // ---------- generic control binding ----------
 function bindRange(id, key, tf = v => +v) {
@@ -174,7 +231,7 @@ bindRange('sat','sat'); bindRange('bright','bright'); bindRange('contrast','cont
 const commit = () => history.commit();
 ['keyThresh','keySoft','spill','levels','edgeThresh','edgeThick','edgeGain','outlineThick',
  'sat','bright','contrast','rate',
- 'keyMode','keyColor','edgeColor','tint','outline','outlineColor','toon','outW','outH','bpm','beatOffset','beatsPerBar','fps']
+ 'keyMode','keyColor','edgeColor','tint','outline','outlineColor','toon','outW','outH','fps']
   .forEach(id => $(id).addEventListener('change', commit));
 
 // toon look presets
@@ -260,31 +317,94 @@ canvas.addEventListener('click', e => {
   eyedrop = false; canvas.style.cursor = 'default'; emit(); history.commit();
 });
 
-// ---------- beats & timing ----------
-$('bpm').addEventListener('change', e => { state.bpm = +e.target.value; emit(); timeline.draw(); });
-$('beatOffset').addEventListener('change', e => { state.beatOffset = +e.target.value; emit(); timeline.draw(); });
-$('beatsPerBar').addEventListener('change', e => { state.beatsPerBar = +e.target.value|0; timeline.draw(); });
-$('setOffsetHere').addEventListener('click', () => {
+// ---------- workflow tabs ----------
+for (const tab of document.querySelectorAll('.tab')) {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab));
+    $('tabpanes').dataset.active = tab.dataset.tab;
+  });
+}
+
+// ---------- beat anchors ----------
+function updateBpmEq() {
+  $('bpmEq').textContent = state.beatLen > 0 ? `${(60 / state.beatLen).toFixed(1)} BPM` : '';
+}
+function renderAnchors() {
+  const box = $('anchorList'); if (!box) return;
+  box.innerHTML = '';
+  const A = activeAnchors();
+  const segs = segments();
+  A.forEach((a, i) => {
+    const row = document.createElement('div'); row.className = 'anchor-row';
+    const flag = document.createElement('span'); flag.className = 'flag'; flag.textContent = '⚑';
+    const info = document.createElement('span'); info.className = 'info';
+    if (i === 0) {
+      info.textContent = `${a.toFixed(2)}s — beat grid start`;
+    } else {
+      const s = segs[i - 1];
+      info.textContent = `${a.toFixed(2)}s · ${s.beats} beat${s.beats > 1 ? 's' : ''} · ${s.rate.toFixed(2)}× · lands @ ♩${s.outOut.toFixed(2)}s`;
+    }
+    const del = document.createElement('span'); del.className = 'del'; del.textContent = '✕'; del.title = 'delete anchor';
+    del.addEventListener('click', () => {
+      const idx = state.anchors.findIndex(x => Math.abs(x - a) < 1e-6);
+      if (idx >= 0) state.anchors.splice(idx, 1);
+      emit(); timeline.draw(); renderAnchors(); history.commit();
+    });
+    row.appendChild(flag); row.appendChild(info); row.appendChild(del);
+    box.appendChild(row);
+  });
+  if (!A.length) {
+    const hint = document.createElement('div'); hint.className = 'muted';
+    hint.style.padding = '2px 4px';
+    hint.textContent = 'No anchors yet — scrub to a move\'s impact moment and press B.';
+    box.appendChild(hint);
+  }
+}
+function addAnchorAtPlayhead() {
   if (!state.video) return;
-  state.beatOffset = +state.video.currentTime.toFixed(3);
-  $('beatOffset').value = state.beatOffset; timeline.draw(); history.commit();
+  const t = state.video.currentTime;
+  if (t < state.trimIn - 1e-6 || t > state.trimOut + 1e-6) return;
+  if ((state.anchors || []).some(a => Math.abs(a - t) < 0.05)) return;   // dedupe
+  state.anchors.push(+t.toFixed(3));
+  state.anchors.sort((a, b) => a - b);
+  emit(); timeline.draw(); renderAnchors(); history.commit();
+}
+$('addAnchor').addEventListener('click', addAnchorAtPlayhead);
+$('clearAnchors').addEventListener('click', () => {
+  if (!state.anchors.length) return;
+  state.anchors = [];
+  emit(); timeline.draw(); renderAnchors(); history.commit();
 });
-$('tapTempo').addEventListener('click', () => {
-  const bpm = tap.tap(performance.now());
-  if (bpm) { state.bpm = bpm; $('bpm').value = bpm; timeline.draw(); history.commit(); }
+$('beatLen').addEventListener('change', e => {
+  state.beatLen = Math.max(0.1, +e.target.value || 2);
+  updateBpmEq(); emit(); timeline.draw(); renderAnchors(); history.commit();
 });
+$('metronome').addEventListener('change', e => { state.metronome = e.target.checked; emit(); });
+
+// ---------- playback & export controls ----------
 $('rate').addEventListener('input', e => {
   state.playbackRate = +e.target.value;
   $('rateLabel').textContent = state.playbackRate.toFixed(2) + '×';
-  if (state.video && state.playing) state.video.playbackRate = state.playbackRate;
 });
 $('fps').addEventListener('change', e => { state.fps = Math.max(10, +e.target.value|0); });
+
+// ---------- keyboard shortcuts ----------
+window.addEventListener('keydown', e => {
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+  if (e.metaKey || e.ctrlKey) return;                 // undo/redo handled separately
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (e.key === 'b' || e.key === 'B') addAnchorAtPlayhead();
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); stepFrame(-1, e.shiftKey); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); stepFrame(1, e.shiftKey); }
+});
 // trim is edited directly on the timeline (drag the handles); no buttons.
 function updateTrimLabel() {
   const el = $('trimLabel'); if (!el) return;
   const full = state.trimIn <= 0.001 && Math.abs(state.trimOut - state.duration) < 0.01;
-  el.textContent = full ? 'trim: full clip'
+  let txt = full ? 'trim: full clip'
     : `trim: ${state.trimIn.toFixed(2)}s → ${state.trimOut.toFixed(2)}s`;
+  if (hasBeatMap()) txt += ` · beat-timed out: ${outputDuration().toFixed(2)}s`;
+  el.textContent = txt;
 }
 
 // keep crop box glued to the canvas as it resizes / state changes
@@ -304,13 +424,42 @@ const closeModal = () => ($('exportModal').hidden = true);
 $('exportCancel').addEventListener('click', () => { cancelExport = true; closeModal(); });
 const prog = (p, msg) => { $('exportBar').style.width = (p*100).toFixed(1)+'%'; $('exportStatus').textContent = msg; };
 
+// draw each object's mask, cropped+resized to the output frame so it aligns 1:1 with frames/
+const _maskCanvas = document.createElement('canvas');
+async function layerMaskFiles(srcT, i) {
+  if (!layers.has()) return [];
+  const pad = n => String(n).padStart(4, '0');
+  _maskCanvas.width = state.outputW; _maskCanvas.height = state.outputH;
+  const ctx = _maskCanvas.getContext('2d');
+  const files = [];
+  for (const L of layers.layers) {
+    const img = layers.maskAt(L.slug, srcT);
+    ctx.clearRect(0, 0, _maskCanvas.width, _maskCanvas.height);
+    if (img) {
+      const sx = state.crop.x * img.width, sy = state.crop.y * img.height;
+      const sw = state.crop.w * img.width, sh = state.crop.h * img.height;
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, _maskCanvas.width, _maskCanvas.height);
+    }
+    const blob = await new Promise(r => _maskCanvas.toBlob(r, 'image/png'));
+    files.push({ name: `masks/${L.slug}/frame_${pad(i)}.png`, buf: await blob.arrayBuffer() });
+  }
+  return files;
+}
+
 $('exportPngBtn').addEventListener('click', async () => {
   if (!state.video) return;
-  const wasPlaying = state.playing; state.video.pause(); state.playing = false; $('playBtn').textContent='▶';
+  state.video.pause(); state.playing = false; $('playBtn').textContent='▶';
   openModal('Exporting PNG sequence…');
   const drawFrame = layers.has() ? (v, srcT) => renderComposited(srcT) : null;
+  const extraFrames = layers.has() ? layerMaskFiles : null;
+  // ship per-layer styles + mask dir so the game engine can use each object separately
+  const extraMeta = layers.has()
+    ? { layers: layers.layers.map(L => ({
+        name: L.name, slug: L.slug, visible: L.visible !== false,
+        maskDir: `masks/${L.slug}`, style: L.style })) }
+    : null;
   try {
-    const meta = await exportPngSequence(pipeline, { onProgress: prog, shouldCancel: () => cancelExport, drawFrame });
+    const meta = await exportPngSequence(pipeline, { onProgress: prog, shouldCancel: () => cancelExport, drawFrame, extraFrames, extraMeta });
     if (meta) { prog(1, `done — ${meta.output.frameCount} frames`); setTimeout(closeModal, 700); }
   } catch (e) { $('exportStatus').textContent = 'error: ' + e.message; }
 });
@@ -319,8 +468,10 @@ $('exportWebmBtn').addEventListener('click', async () => {
   if (!state.video) return;
   openModal('Recording WebM preview…');
   try {
-    await exportWebm(canvas, () => pipeline.render(state.video, state),
-      { onProgress: prog, shouldCancel: () => cancelExport });
+    await exportWebm(canvas,
+      () => layers.has() ? renderComposited(state.video.currentTime) : pipeline.render(state.video, state),
+      { onProgress: prog, shouldCancel: () => cancelExport,
+        rateFn: t => state.playbackRate * rateAt(t) });
     prog(1, 'done'); setTimeout(closeModal, 700);
   } catch (e) { $('exportStatus').textContent = 'error: ' + e.message; }
 });
@@ -536,7 +687,6 @@ async function previewSam() {
   }
   $('samStatus').textContent = `preview — check each object mask, then “Track whole clip”`;
 }
-$('samPick').addEventListener('click', () => pickVideoDesktop().catch(e => $('samStatus').textContent = e.message));
 $('samPreview').addEventListener('click', previewSam);
 $('samRun').addEventListener('click', runSam);
 $('samReset').addEventListener('click', resetSam);

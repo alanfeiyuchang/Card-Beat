@@ -156,6 +156,7 @@ class Api:
 
 if __name__ == "__main__":
     threading.Thread(target=serve, daemon=True).start()
+    webview.settings["ALLOW_DOWNLOADS"] = True   # export ZIP/WebM = browser-style download
     api = Api()
     webview.create_window("Card Beat", f"http://127.0.0.1:{PORT}/index.html",
                           js_api=api, width=1440, height=900)

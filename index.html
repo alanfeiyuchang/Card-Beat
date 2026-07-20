@@ -10,7 +10,7 @@
 <header class="topbar">
   <div class="brand">🂡 Card Beat</div>
   <div class="file-io">
-    <label class="btn">Import video<input id="videoInput" type="file" accept="video/*" hidden></label>
+    <label class="btn" id="importBtn">Import video<input id="videoInput" type="file" accept="video/*" hidden></label>
     <span id="fileName" class="filename">no clip loaded</span>
   </div>
   <div class="hist">
@@ -39,103 +39,147 @@
       </div>
     </div>
     <div class="transport">
-      <button id="playBtn" class="btn" disabled>▶</button>
+      <button id="playBtn" class="btn" disabled title="Play/Pause (Space)">▶</button>
       <input id="scrub" class="scrub" type="range" min="0" max="1000" value="0" disabled>
       <span id="timeLabel" class="time">0.00 / 0.00</span>
     </div>
     <div id="timeline" class="timeline">
       <canvas id="tlcanvas"></canvas>
     </div>
+    <div class="hint-bar muted">Space = play · B = add beat anchor · ←/→ = step frame (⇧ = ×10) ·
+      drag timeline edges = trim · drag red flags = move anchors · double-click a flag = delete it</div>
   </section>
 
-  <!-- Right: controls -->
+  <!-- Right: controls, organized as a workflow -->
   <aside class="controls">
-    <div class="panel" id="samPanel" hidden>
-      <h3>SAM segmentation (desktop)</h3>
-      <div class="row"><button class="btn small" id="samPick">1 · Open video</button></div>
-      <div class="row"><label>Concepts <input type="text" id="samConcepts" value="hand, playing card"></label></div>
-      <div class="row"><label>Model
-        <select id="samModel">
-          <option value="sam2.1_b.pt">SAM 2.1 — click points (recommended)</option>
-          <option value="sam3.pt">SAM 3.1 — text, no clicking (slow, needs HF login)</option>
-        </select></label></div>
-      <div class="row" id="samPointsRow"><button class="btn small" id="samSetPoints">Set object points</button>
-        <button class="btn small" id="samNextObj" hidden>Next object ▸</button>
-        <button class="btn small" id="samClearPoints" hidden>Clear</button></div>
-      <div class="row"><span id="samPointsStatus" class="muted">no points</span></div>
-      <div class="row"><label>Mask FPS <input type="number" id="samFps" value="30" min="5" max="60" step="1"></label></div>
-      <div class="row"><button class="btn small primary" id="samPreview">2 · Preview frame</button>
-        <button class="btn small" id="samReset">Reset SAM</button></div>
-      <div class="row"><button class="btn small primary" id="samRun">3 · Track whole clip</button></div>
-      <div class="row"><div class="sam-progress"><div id="samBar" class="sam-bar"></div></div></div>
-      <div class="row"><span id="samStatus" class="muted">—</span></div>
-    </div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="cut">1 · Cut</button>
+      <button class="tab" data-tab="objects">2 · Objects</button>
+      <button class="tab" data-tab="style">3 · Style</button>
+      <button class="tab" data-tab="beat">4 · Beat</button>
+    </nav>
+    <div class="tabpanes" id="tabpanes" data-active="cut">
 
-    <div class="panel" data-collapsed="false">
-      <h3>Frame & Crop</h3>
-      <div class="row"><label>Show crop tool <input type="checkbox" id="cropToggle"></label></div>
-      <div class="row"><label>Output W <input type="number" id="outW" value="512" min="16" max="2048" step="1"></label></div>
-      <div class="row"><label>Output H <input type="number" id="outH" value="512" min="16" max="2048" step="1"></label></div>
-      <div class="row"><button class="btn small" id="cropReset">Reset crop</button><button class="btn small" id="cropSquare">Square output</button><button class="btn small" id="cropApply">Apply crop</button></div>
-      <div class="row"><span class="muted">Crop keeps the output aspect ratio (no stretching).</span></div>
-    </div>
+      <!-- ============ 1 · CUT ============ -->
+      <section data-pane="cut">
+        <div class="panel">
+          <h3>Trim</h3>
+          <div class="row"><span id="trimLabel" class="muted">trim: full clip</span></div>
+          <div class="row"><span class="muted">Drag the teal edges on the timeline to trim. Playback,
+            SAM and export all use only the trimmed range. Double-click the timeline to reset.</span></div>
+        </div>
+        <div class="panel">
+          <h3>Frame &amp; Crop</h3>
+          <div class="row"><label>Show crop tool <input type="checkbox" id="cropToggle"></label></div>
+          <div class="row"><label>Output W <input type="number" id="outW" value="512" min="16" max="2048" step="1"></label></div>
+          <div class="row"><label>Output H <input type="number" id="outH" value="512" min="16" max="2048" step="1"></label></div>
+          <div class="row"><button class="btn small" id="cropReset">Reset crop</button><button class="btn small" id="cropSquare">Square output</button><button class="btn small" id="cropApply">Apply crop</button></div>
+          <div class="row"><span class="muted">Crop keeps the output aspect ratio (no stretching).</span></div>
+        </div>
+      </section>
 
-    <div class="panel">
-      <h3>Background removal</h3>
-      <div class="row"><label>Mode
-        <select id="keyMode">
-          <option value="0">None</option>
-          <option value="1">Chroma key (pick color)</option>
-          <option value="2">Remove dark background</option>
-          <option value="3">Remove light background</option>
-        </select></label></div>
-      <div class="row keycolor-row"><label>Key color <input type="color" id="keyColor" value="#00ff00"></label>
-        <button class="btn small" id="pickKey" title="Click preview to sample">Eyedrop</button></div>
-      <div class="row"><label>Threshold <input type="range" id="keyThresh" min="0" max="1" step="0.01" value="0.35"></label></div>
-      <div class="row"><label>Softness <input type="range" id="keySoft" min="0.001" max="0.5" step="0.01" value="0.1"></label></div>
-      <div class="row"><label>Spill kill <input type="range" id="spill" min="0" max="1" step="0.01" value="0"></label></div>
-    </div>
+      <!-- ============ 2 · OBJECTS ============ -->
+      <section data-pane="objects" hidden>
+        <div class="panel" id="samPanel" hidden>
+          <h3>SAM segmentation</h3>
+          <div class="row"><label>Concepts <input type="text" id="samConcepts" value="hand, playing card"></label></div>
+          <div class="row"><label>Model
+            <select id="samModel">
+              <option value="sam2.1_t.pt">SAM 2.1 tiny — click points, fast (default)</option>
+              <option value="sam2.1_b.pt">SAM 2.1 base — click points, higher quality</option>
+              <option value="sam3.pt">SAM 3.1 — text, no clicking (very slow, needs HF login)</option>
+            </select></label></div>
+          <div class="row" id="samPointsRow"><button class="btn small" id="samSetPoints">1 · Set object points</button>
+            <button class="btn small" id="samNextObj" hidden>Next object ▸</button>
+            <button class="btn small" id="samClearPoints" hidden>Clear</button></div>
+          <div class="row"><span id="samPointsStatus" class="muted">no points</span></div>
+          <div class="row"><label>Mask FPS <input type="number" id="samFps" value="30" min="5" max="60" step="1"></label></div>
+          <div class="row"><button class="btn small primary" id="samPreview">2 · Preview frame</button>
+            <button class="btn small" id="samReset">Reset SAM</button></div>
+          <div class="row"><button class="btn small primary" id="samRun">3 · Track whole clip</button></div>
+          <div class="row"><div class="sam-progress"><div id="samBar" class="sam-bar"></div></div></div>
+          <div class="row"><span id="samStatus" class="muted">—</span></div>
+        </div>
+        <div class="panel" id="samBrowserNote">
+          <h3>SAM segmentation</h3>
+          <div class="row"><span class="muted">Object segmentation needs the desktop app —
+            run <code>./run.sh</code> from the project folder.</span></div>
+        </div>
+      </section>
 
-    <div class="panel" id="layerPanel" hidden>
-      <h3>Object layers</h3>
-      <div class="row" id="layerButtons"></div>
-      <div class="row"><span class="muted">Pick an object, then edit its shader + tint below — each is styled independently.</span></div>
-    </div>
+      <!-- ============ 3 · STYLE ============ -->
+      <section data-pane="style" hidden>
+        <div class="panel" id="layerPanel" hidden>
+          <h3>Object layers</h3>
+          <div class="row" id="layerButtons"></div>
+          <div class="row"><span class="muted">Pick an object, then edit its shader + tint below — each is styled independently.</span></div>
+        </div>
 
-    <div class="panel">
-      <h3>Toon shader</h3>
-      <div class="row presets"><span>Look</span>
-        <button class="btn small" data-preset="justdance">Just Dance</button>
-        <button class="btn small" data-preset="ink">Comic ink</button>
-        <button class="btn small" data-preset="flat">Flat 2-tone</button>
-      </div>
-      <div class="row presets" id="customPresets"></div>
-      <div class="row"><input type="text" id="presetName" placeholder="name this look…">
-        <button class="btn small" id="savePreset">Save</button></div>
-      <div class="row"><label>Enable <input type="checkbox" id="toon" checked></label></div>
-      <div class="row"><label>Color bands <input type="range" id="levels" min="2" max="16" step="1" value="3"></label></div>
-      <div class="row"><label>Edge threshold <input type="range" id="edgeThresh" min="0" max="1" step="0.01" value="0.10"></label></div>
-      <div class="row"><label>Edge thickness <input type="range" id="edgeThick" min="0.5" max="8" step="0.1" value="3.5"></label></div>
-      <div class="row"><label>Edge gain <input type="range" id="edgeGain" min="1" max="6" step="0.1" value="3"></label></div>
-      <div class="row"><label>Edge color <input type="color" id="edgeColor" value="#000000"></label></div>
-      <div class="row"><label>Layer tint <input type="color" id="tint" value="#ffffff"></label><button class="btn small" id="tintReset">none</button></div>
-      <div class="row"><label>Object outline <input type="checkbox" id="outline"></label></div>
-      <div class="row"><label>Outline thickness <input type="range" id="outlineThick" min="1" max="12" step="0.5" value="3"></label></div>
-      <div class="row"><label>Outline color <input type="color" id="outlineColor" value="#ffffff"></label></div>
-      <div class="row"><label>Saturation <input type="range" id="sat" min="0" max="2" step="0.01" value="1.5"></label></div>
-      <div class="row"><label>Brightness <input type="range" id="bright" min="-0.5" max="0.5" step="0.01" value="0.05"></label></div>
-      <div class="row"><label>Contrast <input type="range" id="contrast" min="0.5" max="2" step="0.01" value="1.3"></label></div>
-    </div>
+        <div class="panel">
+          <h3>Toon shader</h3>
+          <div class="row presets"><span>Look</span>
+            <button class="btn small" data-preset="justdance">Just Dance</button>
+            <button class="btn small" data-preset="ink">Comic ink</button>
+            <button class="btn small" data-preset="flat">Flat 2-tone</button>
+          </div>
+          <div class="row presets" id="customPresets"></div>
+          <div class="row"><input type="text" id="presetName" placeholder="name this look…">
+            <button class="btn small" id="savePreset">Save</button></div>
+          <div class="row"><label>Enable <input type="checkbox" id="toon" checked></label></div>
+          <div class="row"><label>Color bands <input type="range" id="levels" min="2" max="16" step="1" value="3"></label></div>
+          <div class="row"><label>Edge threshold <input type="range" id="edgeThresh" min="0" max="1" step="0.01" value="0.10"></label></div>
+          <div class="row"><label>Edge thickness <input type="range" id="edgeThick" min="0.5" max="8" step="0.1" value="3.5"></label></div>
+          <div class="row"><label>Edge gain <input type="range" id="edgeGain" min="1" max="6" step="0.1" value="3"></label></div>
+          <div class="row"><label>Edge color <input type="color" id="edgeColor" value="#000000"></label></div>
+          <div class="row"><label>Layer tint <input type="color" id="tint" value="#ffffff"></label><button class="btn small" id="tintReset">none</button></div>
+          <div class="row"><label>Object outline <input type="checkbox" id="outline"></label></div>
+          <div class="row"><label>Outline thickness <input type="range" id="outlineThick" min="1" max="12" step="0.5" value="3"></label></div>
+          <div class="row"><label>Outline color <input type="color" id="outlineColor" value="#ffffff"></label></div>
+          <div class="row"><label>Saturation <input type="range" id="sat" min="0" max="2" step="0.01" value="1.5"></label></div>
+          <div class="row"><label>Brightness <input type="range" id="bright" min="-0.5" max="0.5" step="0.01" value="0.05"></label></div>
+          <div class="row"><label>Contrast <input type="range" id="contrast" min="0.5" max="2" step="0.01" value="1.3"></label></div>
+        </div>
 
-    <div class="panel">
-      <h3>Beats & timing</h3>
-      <div class="row"><label>BPM <input type="number" id="bpm" value="120" min="30" max="300" step="0.1"></label>
-        <button class="btn small" id="tapTempo">Tap</button></div>
-      <div class="row"><label>First beat (s) <input type="number" id="beatOffset" value="0" min="0" step="0.001"></label>
-        <button class="btn small" id="setOffsetHere">Set @ playhead</button></div>
-      <div class="row"><label>Beats / bar <input type="number" id="beatsPerBar" value="4" min="1" max="16" step="1"></label></div>
-      <div class="row"><label>Playback speed <input type="range" id="rate" min="0.25" max="2" step="0.05" value="1"></label><span id="rateLabel">1.00×</span></div>
-      <div class="row"><label>Export FPS <input type="number" id="fps" value="30" min="10" max="60" step="1"></label></div>
+        <div class="panel">
+          <h3>Background removal (no-SAM fallback)</h3>
+          <div class="row"><label>Mode
+            <select id="keyMode">
+              <option value="0">None</option>
+              <option value="1">Chroma key (pick color)</option>
+              <option value="2">Remove dark background</option>
+              <option value="3">Remove light background</option>
+            </select></label></div>
+          <div class="row keycolor-row"><label>Key color <input type="color" id="keyColor" value="#00ff00"></label>
+            <button class="btn small" id="pickKey" title="Click preview to sample">Eyedrop</button></div>
+          <div class="row"><label>Threshold <input type="range" id="keyThresh" min="0" max="1" step="0.01" value="0.35"></label></div>
+          <div class="row"><label>Softness <input type="range" id="keySoft" min="0.001" max="0.5" step="0.01" value="0.1"></label></div>
+          <div class="row"><label>Spill kill <input type="range" id="spill" min="0" max="1" step="0.01" value="0"></label></div>
+        </div>
+      </section>
+
+      <!-- ============ 4 · BEAT ============ -->
+      <section data-pane="beat" hidden>
+        <div class="panel">
+          <h3>Beat anchors</h3>
+          <div class="row"><label>Seconds per beat <input type="number" id="beatLen" value="2" min="0.1" max="10" step="0.05"></label>
+            <span id="bpmEq" class="muted">30 BPM</span></div>
+          <div class="row"><button class="btn small primary" id="addAnchor">＋ Anchor @ playhead (B)</button>
+            <button class="btn small" id="clearAnchors">Clear all</button></div>
+          <div id="anchorList" class="anchor-list"></div>
+          <div class="row"><label>Beat click on play <input type="checkbox" id="metronome" checked></label></div>
+          <div class="row"><span class="muted">Playback between anchors is auto-stretched so every anchor
+            lands exactly on a beat (nearest whole beat, min 1). Drag the red flags on the timeline to
+            move an anchor; double-click a flag to delete it.</span></div>
+        </div>
+        <div class="panel">
+          <h3>Playback &amp; export</h3>
+          <div class="row"><label>Preview speed <input type="range" id="rate" min="0.25" max="2" step="0.05" value="1"></label><span id="rateLabel">1.00×</span></div>
+          <div class="row"><label>Export FPS <input type="number" id="fps" value="30" min="10" max="60" step="1"></label></div>
+          <div class="row"><span class="muted">With 2+ anchors the export bakes the beat-stretched timing
+            and the beat times go into the JSON; preview speed is then preview-only.</span></div>
+        </div>
+      </section>
+
     </div>
   </aside>
 </main>

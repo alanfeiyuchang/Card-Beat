@@ -39,17 +39,13 @@ export const state = {
   // timing
   trimIn: 0,
   trimOut: 0,
-  playbackRate: 1,
+  playbackRate: 1,     // preview speed; baked into export ONLY when no beat anchors exist
   fps: 30,
 
-  // beats (grid-driven)
-  bpm: 120,
-  beatOffset: 0,      // seconds, source time of first beat
-  beatsPerBar: 4,
-
-  // ml segmentation (not part of undo history)
-  segEnable: false,
-  segModel: 'briaai/RMBG-1.4',
+  // beat anchors (source seconds, clip-specific) — see beatmap.js for the retiming rules
+  anchors: [],
+  beatLen: 2.0,        // seconds per beat
+  metronome: true,     // click at beat points during playback
 
   // ui
   showCrop: false,
@@ -59,17 +55,3 @@ export const state = {
 const subs = new Set();
 export function onChange(fn) { subs.add(fn); return () => subs.delete(fn); }
 export function emit() { for (const fn of subs) fn(state); }
-
-// Beat timestamps (source seconds) that fall inside the trim window.
-export function beatTimes() {
-  const period = 60 / state.bpm;
-  if (!(period > 0) || !state.duration) return [];
-  const out = [];
-  // walk backward/forward from offset
-  let t = state.beatOffset;
-  while (t > state.trimIn + 1e-4) t -= period;
-  for (; t <= state.trimOut + 1e-4; t += period) {
-    if (t >= state.trimIn - 1e-4) out.push(+t.toFixed(4));
-  }
-  return out;
-}

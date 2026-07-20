@@ -20,6 +20,10 @@ resources/videos/*
 # Node
 node_modules/
 
+# Stray/unrelated large artifacts (not part of Card Beat)
+mobileclip_blt.ts
+/Card Beat/
+
 # OS / editor
 .DS_Store
 Thumbs.db

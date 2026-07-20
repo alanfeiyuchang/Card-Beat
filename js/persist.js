@@ -10,8 +10,9 @@ const STATE_KEYS = [
   'keyMode', 'keyColor', 'keyThresh', 'keySoft', 'spill',
   'toon', 'levels', 'edgeThresh', 'edgeThick', 'edgeGain', 'edgeColor', 'tint',
   'outline', 'outlineColor', 'outlineThick', 'sat', 'bright', 'contrast',
-  'bpm', 'beatsPerBar', 'playbackRate', 'fps',
+  'beatLen', 'metronome', 'playbackRate', 'fps',
 ];
+// NOTE: `anchors` are clip-specific and deliberately NOT persisted across sessions.
 // DOM-backed inputs (SAM panel) worth carrying over
 const DOM_KEYS = ['samConcepts', 'samModel', 'samFps'];
 

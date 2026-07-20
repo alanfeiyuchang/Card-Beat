@@ -6,7 +6,7 @@ import { state, emit } from './state.js';
 const FIELDS = ['crop','outputW','outputH','keyMode','keyColor','keyThresh','keySoft','spill',
   'toon','levels','edgeThresh','edgeThick','edgeGain','edgeColor','tint',
   'outline','outlineColor','outlineThick','sat','bright','contrast',
-  'trimIn','trimOut','playbackRate','fps','bpm','beatOffset','beatsPerBar'];
+  'trimIn','trimOut','playbackRate','fps','anchors','beatLen'];
 
 function clone(v) { return Array.isArray(v) ? v.slice() : (v && typeof v === 'object' ? { ...v } : v); }
 function snap() { const o = {}; for (const k of FIELDS) o[k] = clone(state[k]); return o; }

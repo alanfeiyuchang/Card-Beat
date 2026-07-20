@@ -39,6 +39,24 @@ Default toon look is **Just Dance**: near-flat color (few bands), thick bold ink
 (`edgeGain` pushes the Sobel edge toward solid), punchy saturation. Preset buttons in the Toon
 panel: Just Dance / Comic ink / Flat 2-tone.
 
+## Beat anchors (rhythm-game retiming — core feature)
+
+`js/beatmap.js`. The user drops anchors (B key / button; red flags on the timeline, draggable,
+dbl-click deletes) at move-impact moments. Consecutive anchors are retimed to the NEAREST whole
+number of beats (min 1) at `beatLen` s/beat, so every anchor lands exactly on a beat in output
+time (e.g. beatLen 2, anchors 2/4.5/8 → seg1 2.5s→2s @1.25×, seg2 3.5s→4s @0.875×). Playback
+applies per-segment `video.playbackRate` live; a Web Audio metronome clicks at beat points
+(accent = anchors). PNG export frame-steps through `outToSrc(i/fps)` so the retiming is baked
+into the frames; `cardbeat.json` v2 ships `beatsSec` (OUTPUT time), accents, anchors, and the
+piecewise segment map. With <2 anchors the legacy uniform `playbackRate` applies. Anchors are
+clip-specific (reset on import, in undo history, not persisted).
+
+## UI layout
+
+Right panel is 4 workflow tabs: 1·Cut (trim readout, crop) · 2·Objects (SAM) · 3·Style (layers,
+toon, background-removal fallback) · 4·Beat (anchors, beatLen+BPM, metronome, preview speed,
+export fps). Shortcuts: Space play, B add anchor, ←/→ frame-step (⇧×10), ⌘Z/⌘⇧Z undo/redo.
+
 ## Editing UX
 
 - **Undo/redo** — toolbar buttons + ⌘Z / ⌘⇧Z. Steps commit on control release, crop/trim

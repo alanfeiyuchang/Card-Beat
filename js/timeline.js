@@ -1,29 +1,38 @@
-// Timeline: waveform + beat grid + playhead, with draggable trim handles like a normal
-// video editor — drag either edge to resize the trim, drag the top bar to move the whole
-// window, click the track to scrub, double-click to reset trim to the full clip.
-import { state, beatTimes, emit } from './state.js';
+// Timeline: waveform + beat anchors/grid + playhead, with draggable trim handles like a
+// normal video editor — drag either trim edge, drag the top bar to move the whole trim
+// window, drag a beat anchor to move it, click the track to scrub, double-click an anchor
+// to delete it (double-click elsewhere resets the trim).
+import { state, emit } from './state.js';
+import { activeAnchors, beatPoints } from './beatmap.js';
 
 const HANDLE_HIT = 10;   // px grab tolerance around a trim edge
+const ANCHOR_HIT = 7;    // px grab tolerance around a beat anchor
 const TOP_BAR = 16;      // px height of the draggable "move whole trim" strip
 
 export class Timeline {
-  constructor(canvas, { onSeek, onCommit }) {
+  constructor(canvas, { onSeek, onCommit, onAnchorsChanged }) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.onSeek = onSeek;
     this.onCommit = onCommit || (() => {});
+    this.onAnchorsChanged = onAnchorsChanged || (() => {});
     this.peaks = null;
     this.playhead = 0;
-    this.dragging = null;   // 'in' | 'out' | 'region' | 'scrub'
+    this.dragging = null;   // 'in' | 'out' | 'region' | 'scrub' | {anchor: index}
     this.regionStart = null;
     canvas.addEventListener('pointerdown', e => this._down(e));
     canvas.addEventListener('pointermove', e => this._hover(e));
-    canvas.addEventListener('dblclick', () => this._resetTrim());
+    canvas.addEventListener('dblclick', e => this._dblclick(e));
     window.addEventListener('pointermove', e => this._move(e));
     window.addEventListener('pointerup', () => {
-      const wasTrim = this.dragging && this.dragging !== 'scrub';
+      const d = this.dragging;
       this.dragging = null; this.regionStart = null;
-      if (wasTrim) this.onCommit();
+      if (d && d.anchor !== undefined) {
+        state.anchors.sort((a, b) => a - b);
+        this.onAnchorsChanged(); this.onCommit();
+      } else if (d && d !== 'scrub') {
+        this.onCommit();
+      }
     });
   }
 
@@ -41,11 +50,23 @@ export class Timeline {
     return (e.clientY - r.top) * (this.canvas.height / r.height);
   }
 
+  _anchorAt(x) {
+    const A = state.anchors || [];
+    let best = -1, bd = ANCHOR_HIT + 1;
+    for (let i = 0; i < A.length; i++) {
+      const d = Math.abs(x - this._x(A[i]));
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  }
+
   _hitMode(x, y) {
     if (!state.video) return 'scrub';
     const inX = this._x(state.trimIn), outX = this._x(state.trimOut);
     if (Math.abs(x - inX) <= HANDLE_HIT) return 'in';
     if (Math.abs(x - outX) <= HANDLE_HIT) return 'out';
+    const ai = this._anchorAt(x);
+    if (ai >= 0) return { anchor: ai };
     if (y <= TOP_BAR && x > inX && x < outX) return 'region';
     return 'scrub';
   }
@@ -54,7 +75,8 @@ export class Timeline {
     if (this.dragging) return;
     const m = this._hitMode(this._pos(e), this._posY(e));
     this.canvas.style.cursor =
-      m === 'in' || m === 'out' ? 'ew-resize' : m === 'region' ? 'grab' : 'pointer';
+      m === 'in' || m === 'out' || (m && m.anchor !== undefined) ? 'ew-resize'
+      : m === 'region' ? 'grab' : 'pointer';
   }
 
   _down(e) {
@@ -67,6 +89,18 @@ export class Timeline {
     }
   }
 
+  _dblclick(e) {
+    if (!state.video) return;
+    const ai = this._anchorAt(this._pos(e));
+    if (ai >= 0) {
+      state.anchors.splice(ai, 1);
+      emit(); this.draw(); this.onAnchorsChanged(); this.onCommit();
+    } else {
+      state.trimIn = 0; state.trimOut = state.duration;
+      emit(); this.draw(); this.onCommit();
+    }
+  }
+
   _move(e) {
     if (!this.dragging) return;
     const t = Math.max(0, Math.min(state.duration, this._t(this._pos(e))));
@@ -76,19 +110,17 @@ export class Timeline {
       state.trimOut = Math.max(t, state.trimIn + 0.05);
     } else if (this.dragging === 'region') {
       const width = this.regionStart.outT - this.regionStart.inT;
-      let dt = this._t(this._pos(e)) - this._t(this.regionStart.x);
-      let inT = Math.max(0, Math.min(this.regionStart.inT + dt, state.duration - width));
+      const dt = this._t(this._pos(e)) - this._t(this.regionStart.x);
+      const inT = Math.max(0, Math.min(this.regionStart.inT + dt, state.duration - width));
       state.trimIn = inT; state.trimOut = inT + width;
+    } else if (this.dragging.anchor !== undefined) {
+      state.anchors[this.dragging.anchor] =
+        Math.max(state.trimIn, Math.min(state.trimOut, t));
+      this.onAnchorsChanged();
     } else {
       this.onSeek(t);
     }
     emit(); this.draw();
-  }
-
-  _resetTrim() {
-    if (!state.video) return;
-    state.trimIn = 0; state.trimOut = state.duration;
-    emit(); this.draw(); this.onCommit();
   }
 
   resize() {
@@ -117,20 +149,16 @@ export class Timeline {
       ctx.fillRect(0, mid - 1, W, 2);
     }
 
-    // beat grid
-    const beats = beatTimes();
-    const period = 60 / state.bpm;
-    let idx = Math.round((state.trimIn - state.beatOffset) / period);
-    for (const t of beats) {
-      const x = this._x(t);
-      const onBar = ((idx % state.beatsPerBar) + state.beatsPerBar) % state.beatsPerBar === 0;
-      ctx.strokeStyle = onBar ? 'rgba(242,193,78,.9)' : 'rgba(242,193,78,.35)';
-      ctx.lineWidth = onBar ? 2 : 1;
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-      idx++;
+    // beat points from the anchor map: intermediate beats as ticks, projected dimmer
+    for (const b of beatPoints()) {
+      if (b.accent) continue;                       // anchors drawn as flags below
+      const x = this._x(b.src);
+      ctx.strokeStyle = b.projected ? 'rgba(242,193,78,.25)' : 'rgba(242,193,78,.6)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, H * 0.35); ctx.lineTo(x, H); ctx.stroke();
     }
 
-    // dim the trimmed-out regions (drawn over waveform/beats)
+    // dim the trimmed-out regions
     ctx.fillStyle = 'rgba(10,10,14,.62)';
     ctx.fillRect(0, 0, inX, H);
     ctx.fillRect(outX, 0, W - outX, H);
@@ -149,6 +177,15 @@ export class Timeline {
       for (const dy of [-4, 0, 4]) {
         ctx.beginPath(); ctx.moveTo(x - 1.5, mid + dy); ctx.lineTo(x + 1.5, mid + dy); ctx.stroke();
       }
+    }
+
+    // beat anchors: bright flags (full line + triangle at top)
+    for (const a of activeAnchors()) {
+      const x = this._x(a);
+      ctx.strokeStyle = '#e5695b'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+      ctx.fillStyle = '#e5695b';
+      ctx.beginPath(); ctx.moveTo(x - 6, 0); ctx.lineTo(x + 6, 0); ctx.lineTo(x, 9); ctx.closePath(); ctx.fill();
     }
 
     // playhead

@@ -239,7 +239,6 @@ class SamBackend:
             if pts and not isinstance(pts[0], (list, tuple)):
                 pts = [pts]
             pt_list = [[float(x), float(y)] for x, y in pts]
-            labels = [1] * len(pt_list)
             pt_t = (prompt_times or {}).get(c) or 0.0
             cap = cv2.VideoCapture(str(video_path))
             cap.set(cv2.CAP_PROP_POS_MSEC, pt_t * 1000.0)
@@ -248,13 +247,19 @@ class SamBackend:
             if not ok:
                 continue
             H, W = frame.shape[:2]
-            r = model(frame, points=pt_list, labels=labels, verbose=False)[0]
-            m = (r.masks.data[0].cpu().numpy() if getattr(r, "masks", None) is not None
-                 and len(r.masks.data) else np.zeros((H, W)))
-            if m.shape != (H, W):
-                m = cv2.resize(m.astype("uint8"), (W, H), interpolation=cv2.INTER_NEAREST)
+            # segment EACH point independently and union — two points on two hands then
+            # both get captured, instead of SAM anchoring on the first point and dropping the 2nd
+            union = None
+            for pt in pt_list:
+                r = model(frame, points=[pt], labels=[1], verbose=False)[0]
+                m = (r.masks.data[0].cpu().numpy() if getattr(r, "masks", None) is not None
+                     and len(r.masks.data) else np.zeros((H, W)))
+                if m.shape != (H, W):
+                    m = cv2.resize(m.astype("uint8"), (W, H), interpolation=cv2.INTER_NEAREST)
+                m = ((m > 0.5).astype("uint8")) * 255
+                union = m if union is None else np.maximum(union, m)
             slug = _slug(c)
-            Image.fromarray(((m > 0.5).astype("uint8")) * 255, "L").save(out_dir / f"{slug}.png")
+            Image.fromarray(union, "L").save(out_dir / f"{slug}.png")
             items.append({"name": c, "slug": slug, "time": round(pt_t, 4)})
         return items
 
@@ -341,25 +346,30 @@ class SamBackend:
                     raise RuntimeError(f"No point set for '{c}'. Click the object in the preview first.")
                 if pts and not isinstance(pts[0], (list, tuple)):
                     pts = [pts]
-                pt_list = [[float(x), float(y)] for x, y in pts]
-                labels = [1] * len(pt_list)
 
                 # frame index within the trimmed range where this object was marked
                 pt_t = prompt_times.get(c) if prompt_times else None
                 K = 0 if pt_t is None or not N else min(range(N), key=lambda j: abs(frame_times[j] - pt_t))
 
-                full = [None] * N
                 fwd = list(range(K, N))
                 write_subvideo(fwd, work / "fwd.mp4")
-                for oi, m in enumerate(run_pass(work / "fwd.mp4", pt_list, labels)):
-                    if oi < len(fwd):
-                        full[fwd[oi]] = m
-                if K > 0:
-                    bwd = list(range(K, -1, -1))
+                bwd = list(range(K, -1, -1)) if K > 0 else None
+                if bwd:
                     write_subvideo(bwd, work / "bwd.mp4")
-                    for oi, m in enumerate(run_pass(work / "bwd.mp4", pt_list, labels)):
-                        if oi < len(bwd):
-                            full[bwd[oi]] = m
+
+                # track EACH point as its own object, union across points (two hands -> both)
+                full = [None] * N
+                for x, y in pts:
+                    pt = [[float(x), float(y)]]
+                    for oi, m in enumerate(run_pass(work / "fwd.mp4", pt, [1])):
+                        if oi < len(fwd):
+                            j = fwd[oi]
+                            full[j] = m if full[j] is None else np.maximum(full[j], m)
+                    if bwd:
+                        for oi, m in enumerate(run_pass(work / "bwd.mp4", pt, [1])):
+                            if oi < len(bwd):
+                                j = bwd[oi]
+                                full[j] = m if full[j] is None else np.maximum(full[j], m)
 
                 for j in range(N):
                     m = full[j] if full[j] is not None else np.zeros((H, W), dtype="uint8")
