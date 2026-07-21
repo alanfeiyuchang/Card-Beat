@@ -30,6 +30,12 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 
+class SamCancelled(Exception):
+    """Raised (and caught by the caller) when should_cancel() returns True between frames.
+    Python threads can't be force-killed, so cancellation is cooperative: this can only take
+    effect at a checkpoint between iterations, not mid-inference-call."""
+
+
 # SAM3 is heavy to load (~1 min); cache the text predictor so preview + track reuse it.
 _SAM3_SEMANTIC = {}
 
@@ -102,11 +108,12 @@ class SamBackend:
 
     def segment_video(self, video_path, concepts, out_dir, fps=30, points=None,
                       trim_start=None, trim_end=None, prompt_times=None,
-                      max_seconds=None, progress=None):
+                      max_seconds=None, progress=None, should_cancel=None):
         """points: {concept: [x, y]} in SOURCE-pixel coords (required for SAM2).
         trim_start/trim_end (seconds): only this range is segmented (faster; masks aligned to it).
         prompt_times: {concept: seconds} — the frame each object's points were marked on;
-        SAM2 tracks both forward and backward from it."""
+        SAM2 tracks both forward and backward from it.
+        should_cancel: optional zero-arg callable; checked between frames, raises SamCancelled."""
         import cv2
 
         self.is_sam3 = "sam3" in self.model_name.lower()
@@ -125,11 +132,11 @@ class SamBackend:
         if self.is_sam3:
             counts, out_fps, frame_times = self._run_sam3_text(
                 video_path, concepts, slugs, out_dir, fps, max_seconds, src_fps, total, W, H,
-                trim_start, trim_end, progress)
+                trim_start, trim_end, progress, should_cancel)
         else:
             counts, out_fps, frame_times = self._run_sam2_points(
                 video_path, concepts, slugs, out_dir, points or {}, src_fps, total, H, W,
-                trim_start, trim_end, prompt_times or {}, progress)
+                trim_start, trim_end, prompt_times or {}, progress, should_cancel)
 
         manifest = {
             "tool": "Card Beat SAM",
@@ -161,7 +168,7 @@ class SamBackend:
         return ts
 
     def _run_sam3_text(self, video_path, concepts, slugs, out_dir, fps, max_seconds,
-                       src_fps, total, W, H, trim_start, trim_end, progress):
+                       src_fps, total, W, H, trim_start, trim_end, progress, should_cancel=None):
         # SAM3 semantic (text) per frame: detects every instance of each concept and merges
         # them per name (so both hands -> one "hand" layer). No points needed. Slow but works.
         import cv2
@@ -177,6 +184,9 @@ class SamBackend:
         frame_times = []
         cap = cv2.VideoCapture(str(video_path))
         for i in range(n_out):
+            if should_cancel and should_cancel():
+                cap.release()
+                raise SamCancelled()
             cap.set(cv2.CAP_PROP_POS_MSEC, (t0 + i / fps) * 1000.0)
             ok, frame = cap.read()
             if not ok:
@@ -194,7 +204,7 @@ class SamBackend:
         cap.release()
         return counts, fps, frame_times
 
-    def preview_text(self, video_path, concepts, frame_time, out_dir):
+    def preview_text(self, video_path, concepts, frame_time, out_dir, should_cancel=None):
         """Single-frame SAM3 semantic (text) preview at frame_time — no points."""
         import cv2
         from PIL import Image
@@ -219,7 +229,7 @@ class SamBackend:
             items.append({"name": c, "slug": slugs[c], "time": round(frame_time or 0, 4)})
         return items
 
-    def preview_points(self, video_path, concepts, points, prompt_times, out_dir):
+    def preview_points(self, video_path, concepts, points, prompt_times, out_dir, should_cancel=None):
         """Fast single-frame SAM2 image segmentation on each object's marked frame, so the
         user can confirm the points are right before the slow full-video track.
         Returns [{name, slug, time, url-less}] and writes out_dir/<slug>.png masks."""
@@ -233,6 +243,8 @@ class SamBackend:
         out_dir.mkdir(parents=True, exist_ok=True)
         items = []
         for c in concepts:
+            if should_cancel and should_cancel():
+                raise SamCancelled()
             pts = points.get(c) or points.get(_slug(c))
             if not pts:
                 continue
@@ -289,7 +301,8 @@ class SamBackend:
         return tmp.name, times, True
 
     def _run_sam2_points(self, video_path, concepts, slugs, out_dir, points,
-                         src_fps, total, H, W, trim_start, trim_end, prompt_times, progress):
+                         src_fps, total, H, W, trim_start, trim_end, prompt_times, progress,
+                         should_cancel=None):
         """Per object: prompt SAM2 on the marked frame and track BOTH forward and backward
         by running two passes (frames K..end, and K..0 reversed), over the trimmed range."""
         import cv2, os, shutil, tempfile
@@ -331,6 +344,8 @@ class SamBackend:
             pred = SAM2VideoPredictor(overrides=ov)
             out = []
             for r in pred(source=str(subpath), points=pt_list, labels=labels):
+                if should_cancel and should_cancel():
+                    raise SamCancelled()
                 m = (r.masks.data[0].cpu().numpy() if getattr(r, "masks", None) is not None
                      and len(r.masks.data) else np.zeros((H, W)))
                 if m.shape != (H, W):
@@ -341,6 +356,8 @@ class SamBackend:
         counts = {}
         try:
             for c in concepts:
+                if should_cancel and should_cancel():
+                    raise SamCancelled()
                 pts = points.get(c) or points.get(slugs[c])
                 if not pts:
                     raise RuntimeError(f"No point set for '{c}'. Click the object in the preview first.")

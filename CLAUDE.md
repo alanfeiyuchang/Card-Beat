@@ -113,6 +113,18 @@ model. NOT Meta SAM: SAM/SAM2 are promptable and SAM2-video needs a GPU backend,
 is the right in-browser tool for automatic per-frame hand+card isolation. Licensing: RMBG-1.4 is
 non-commercial; use MODNet/BiRefNet (Apache-2.0) for a commercial game.
 
+## Unity companion project (`Card Beat/Card Beat`)
+
+Unity 6 / URP 2D project that consumes the export. Code in `Assets/CardBeat/` (namespace
+`CardBeat`), talks to the editor via Unity MCP. Menu: **Card Beat ▸** Import Package (.zip) /
+Import Extracted Folder / Chart Editor / Create Demo Content. Runtime = `Conductor` (dspTime
+clock) + `ClipSequencePlayer` + `JudgementSystem` + `NoteLane` + `GameHUD` + `CardDropEffect`,
+all bootstrapped by `RhythmGameManager` (scene needs only that one component). Chart data =
+`RhythmChart` ScriptableObject; imported clips = `CardBeatClipAsset`. Clip anchors
+auto-generate hit notes; the Chart Editor window edits them (waveform, snap grid, tap tempo,
+metronome, test play). Input System only (`Keyboard.current` etc.), legacy uGUI Text for HUD.
+See GOALS.md "Unity side" for details.
+
 ## Known limits / upgrade paths
 
 - Chroma/luma keying still available as a lighter alternative to ML segmentation.

@@ -53,6 +53,7 @@ class Api:
         self.backend = None
         self.sam_thread = None
         self.sam_result = None
+        self.cancel_requested = False
 
     def get_status(self):
         return self.status
@@ -60,10 +61,44 @@ class Api:
     def get_progress(self):
         return self.progress
 
+    def cancel_sam(self):
+        """Cooperative cancel: the running job checks this between frames and stops there
+        (can't force-kill a Python thread mid-inference-call). No-op if nothing is running."""
+        self.cancel_requested = True
+        return {"ok": True}
+
+    def pick_export_folder(self):
+        """Native folder picker for the export destination. Returns the chosen directory,
+        or None if cancelled."""
+        win = webview.windows[0]
+        res = win.create_file_dialog(webview.FileDialog.FOLDER)
+        return res[0] if res else None
+
+    def write_export_file(self, base_dir, rel_path, b64data):
+        """Write one exported file (frame/mask/json) straight to disk — no zipping.
+        rel_path uses forward slashes (e.g. 'frames/frame_0000.png'); parent dirs are
+        created as needed. b64data is standard base64 (no data: prefix)."""
+        import base64
+        try:
+            dest = Path(base_dir) / Path(*rel_path.split("/"))
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(base64.b64decode(b64data))
+            return {"ok": True}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def reveal_in_finder(self, path):
+        import subprocess
+        try:
+            subprocess.run(["open", str(path)], check=False)
+            return {"ok": True}
+        except Exception as e:
+            return {"error": str(e)}
+
     def pick_video(self):
         win = webview.windows[0]
         res = win.create_file_dialog(
-            webview.OPEN_DIALOG,
+            webview.FileDialog.OPEN,
             allow_multiple=False,
             file_types=("Video (*.mp4;*.mov;*.m4v;*.webm;*.avi)", "All files (*.*)"),
         )
@@ -90,6 +125,7 @@ class Api:
             return {"error": "no video selected"}
         if self.sam_thread and self.sam_thread.is_alive():
             return {"error": "a segmentation is already running"}
+        self.cancel_requested = False
         self.sam_result = None
         self.status = "starting"
         self.progress = {"frame": 0, "total": 0, "stage": "starting"}
@@ -102,7 +138,7 @@ class Api:
         return {"started": True}
 
     def _sam_job(self, concepts, fps, model, points, trim_start, trim_end, prompt_times, max_seconds):
-        from sam_backend import SamBackend
+        from sam_backend import SamBackend, SamCancelled
         try:
             self.progress = {"frame": 0, "total": 0, "stage": f"loading {model}"}
             self.backend = SamBackend(model=model)
@@ -119,11 +155,16 @@ class Api:
                 self.video_path, concepts, out, fps=fps, points=points,
                 trim_start=trim_start, trim_end=trim_end, prompt_times=prompt_times,
                 max_seconds=max_seconds, progress=prog,
+                should_cancel=lambda: self.cancel_requested,
             )
             manifest["baseUrl"] = "/media/masks"
             self.sam_result = manifest
             self.status = "done"
             self.progress = {"frame": 1, "total": 1, "stage": "done"}
+        except SamCancelled:
+            self.status = "cancelled"
+            self.sam_result = {"cancelled": True}
+            self.progress = {"frame": 0, "total": 0, "stage": "cancelled"}
         except Exception as e:  # surface to the UI instead of dying silently
             self.status = f"error: {e}"
             self.sam_result = {"error": str(e)}
@@ -133,25 +174,52 @@ class Api:
         return self.sam_result
 
     def preview_sam(self, concepts, points, prompt_times=None, model="sam2.1_b.pt", frame_time=0.0):
-        """Single-frame preview: SAM2 uses the click points; SAM3 uses text at frame_time."""
-        from sam_backend import SamBackend
+        """Single-frame preview: SAM2 uses the click points; SAM3 uses text at frame_time.
+        Runs on the same background thread + cancel mechanism as run_sam (SAM3 previews can
+        take 45-77s on this hardware — long enough to need the same escape hatch)."""
         if not self.video_path:
             return {"error": "no video selected"}
+        if self.sam_thread and self.sam_thread.is_alive():
+            return {"error": "a segmentation is already running"}
+        self.cancel_requested = False
+        self.sam_result = None
+        self.status = "starting"
+        self.progress = {"frame": 0, "total": 0, "stage": "starting"}
+        self.sam_thread = threading.Thread(
+            target=self._preview_job,
+            args=(list(concepts), points, prompt_times, model, frame_time),
+            daemon=True,
+        )
+        self.sam_thread.start()
+        return {"started": True}
+
+    def _preview_job(self, concepts, points, prompt_times, model, frame_time):
+        from sam_backend import SamBackend, SamCancelled
         try:
+            self.progress = {"frame": 0, "total": 1, "stage": f"loading {model}"}
             b = SamBackend(model=model)
             out = MEDIA / "preview"
             if out.exists():
                 shutil.rmtree(out)
+            cancel = lambda: self.cancel_requested
             if "sam3" in model:
-                items = b.preview_text(self.video_path, list(concepts), frame_time or 0.0, out)
+                items = b.preview_text(self.video_path, concepts, frame_time or 0.0, out, cancel)
             else:
-                items = b.preview_points(self.video_path, list(concepts), points or {},
-                                         prompt_times or {}, out)
+                items = b.preview_points(self.video_path, concepts, points or {},
+                                         prompt_times or {}, out, cancel)
             for it in items:
                 it["url"] = f"/media/preview/{it['slug']}.png"
-            return {"items": items}
+            self.sam_result = {"items": items}
+            self.status = "done"
+            self.progress = {"frame": 1, "total": 1, "stage": "done"}
+        except SamCancelled:
+            self.status = "cancelled"
+            self.sam_result = {"cancelled": True}
+            self.progress = {"frame": 0, "total": 0, "stage": "cancelled"}
         except Exception as e:
-            return {"error": str(e)}
+            self.status = f"error: {e}"
+            self.sam_result = {"error": str(e)}
+            self.progress = {"frame": 0, "total": 0, "stage": "error"}
 
 
 if __name__ == "__main__":
@@ -160,4 +228,7 @@ if __name__ == "__main__":
     api = Api()
     webview.create_window("Card Beat", f"http://127.0.0.1:{PORT}/index.html",
                           js_api=api, width=1440, height=900)
-    webview.start()
+    # pywebview defaults to private_mode=True ("cookies and local storage are not
+    # preserved"), which silently wipes localStorage (settings + saved presets) on every
+    # launch. Disable it so Card Beat's persisted editor settings actually persist.
+    webview.start(private_mode=False)

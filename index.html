@@ -7,10 +7,30 @@
 <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
+<div id="jsErrorBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99999;
+  background:#c0392b;color:#fff;font:12px/1.4 monospace;padding:8px 12px;white-space:pre-wrap;"></div>
+<script>
+  // Plain (non-module) script — runs before main.js, so it can catch a top-level failure in
+  // main.js itself (which would otherwise silently kill every listener the rest of the file
+  // registers, making EVERY button look dead with zero visible cause).
+  function showJsError(msg) {
+    var el = document.getElementById('jsErrorBanner');
+    el.textContent = String(msg);
+    el.style.display = 'block';
+  }
+  window.addEventListener('error', function (e) {
+    showJsError('JS error: ' + e.message + '  @ ' + e.filename + ':' + e.lineno);
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    showJsError('Unhandled promise rejection: ' + (r && r.message ? r.message : r));
+  });
+</script>
 <header class="topbar">
   <div class="brand">🂡 Card Beat</div>
   <div class="file-io">
-    <label class="btn" id="importBtn">Import video<input id="videoInput" type="file" accept="video/*" hidden></label>
+    <button class="btn" id="importBtn" type="button">Import video</button>
+    <input id="videoInput" type="file" accept="video/*" hidden>
     <span id="fileName" class="filename">no clip loaded</span>
   </div>
   <div class="hist">
@@ -82,22 +102,25 @@
       <section data-pane="objects" hidden>
         <div class="panel" id="samPanel" hidden>
           <h3>SAM segmentation</h3>
-          <div class="row"><label>Concepts <input type="text" id="samConcepts" value="hand, playing card"></label></div>
-          <div class="row"><label>Model
-            <select id="samModel">
-              <option value="sam2.1_t.pt">SAM 2.1 tiny — click points, fast (default)</option>
-              <option value="sam2.1_b.pt">SAM 2.1 base — click points, higher quality</option>
-              <option value="sam3.pt">SAM 3.1 — text, no clicking (very slow, needs HF login)</option>
-            </select></label></div>
-          <div class="row" id="samPointsRow"><button class="btn small" id="samSetPoints">1 · Set object points</button>
-            <button class="btn small" id="samNextObj" hidden>Next object ▸</button>
-            <button class="btn small" id="samClearPoints" hidden>Clear</button></div>
-          <div class="row"><span id="samPointsStatus" class="muted">no points</span></div>
-          <div class="row"><label>Mask FPS <input type="number" id="samFps" value="30" min="5" max="60" step="1"></label></div>
-          <div class="row"><button class="btn small primary" id="samPreview">2 · Preview frame</button>
-            <button class="btn small" id="samReset">Reset SAM</button></div>
-          <div class="row"><button class="btn small primary" id="samRun">3 · Track whole clip</button></div>
-          <div class="row"><div class="sam-progress"><div id="samBar" class="sam-bar"></div></div></div>
+          <div class="sam-controls">
+            <div class="row"><label>Concepts <input type="text" id="samConcepts" value="hand, playing card"></label></div>
+            <div class="row"><label>Model
+              <select id="samModel">
+                <option value="sam2.1_t.pt">SAM 2.1 tiny — click points, fast (default)</option>
+                <option value="sam2.1_b.pt">SAM 2.1 base — click points, higher quality</option>
+                <option value="sam3.pt">SAM 3.1 — text, no clicking (very slow, needs HF login)</option>
+              </select></label></div>
+            <div class="row" id="samPointsRow"><button class="btn small" id="samSetPoints">1 · Set object points</button>
+              <button class="btn small" id="samNextObj" hidden>Next object ▸</button>
+              <button class="btn small" id="samClearPoints" hidden>Clear</button></div>
+            <div class="row"><span id="samPointsStatus" class="muted">no points</span></div>
+            <div class="row"><label>Mask FPS <input type="number" id="samFps" value="30" min="5" max="60" step="1"></label></div>
+            <div class="row"><button class="btn small primary" id="samPreview">2 · Preview frame</button>
+              <button class="btn small" id="samReset">Reset SAM</button></div>
+            <div class="row"><button class="btn small primary" id="samRun">3 · Track whole clip</button></div>
+          </div>
+          <div class="row"><div class="sam-progress"><div id="samBar" class="sam-bar"></div></div>
+            <button class="btn small danger" id="samCancel" hidden>Cancel</button></div>
           <div class="row"><span id="samStatus" class="muted">—</span></div>
         </div>
         <div class="panel" id="samBrowserNote">

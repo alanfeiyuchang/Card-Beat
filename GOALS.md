@@ -91,5 +91,25 @@ not a browser tab; browser-only mode still works for editing but SAM needs the d
   filming backdrop).
 - No alpha video export (WebM VP8 alpha) — PNG sequence is the reliable alpha path today.
 - SAM 3.1 speed is a hardware/ops-support ceiling, not something fixable from the app side.
-- The Unity-side playback/beat-judgement scripts (consuming `cardbeat.json`) have not been
-  built yet — Card Beat only produces the asset package so far.
+
+## Unity side (built 2026-07-20)
+
+The companion Unity project (`Card Beat/Card Beat`, Unity 6, URP 2D) now consumes the export
+package. All code lives under `Assets/CardBeat/` (namespace `CardBeat`):
+
+- **Importer** (`Card Beat ▸ Import Package (.zip)…` / `Import Extracted Folder…`): extracts
+  frames + per-object masks, applies sprite import settings, parses `cardbeat.json` v2 into a
+  `CardBeatClipAsset` (frames, beatsSec/beatsAccent, layers).
+- **Chart editor** (`Card Beat ▸ Chart Editor`): song waveform + BPM/offset beat grid with
+  snap divisions, tap tempo, zoom/pan/scrub, edit-mode playback with metronome, clip events
+  placed on the timeline whose **anchors auto-generate notes** (with bake-to-editable-notes),
+  manual note editing, judgement-window/card-rule tuning, Unity Undo, Test Play.
+- **Runtime**: dspTime `Conductor`, sprite-sequence `ClipSequencePlayer`, single-button
+  `JudgementSystem` (Perfect/Good/Miss, combo/score, autoplay), PaRappa-style `NoteLane`,
+  programmatic `GameHUD`, and `CardDropEffect` — the diegetic "miss = cards tumble" feedback;
+  win condition is cards remaining. `RhythmGameManager` bootstraps the whole scene.
+- **Demo content** (`Card Beat ▸ Create Demo Content`): synthesizes a fake cardbeat package
+  (also an importer end-to-end test), bakes a procedural WAV, builds a playable demo chart.
+
+Verified in-editor via MCP: clean compile, autoplay full-combo run, miss run with card drops,
+importer round-trip (288 frames, 7 anchors, 1 mask layer).

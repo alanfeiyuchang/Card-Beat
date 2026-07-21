@@ -7,11 +7,40 @@ import { state } from './state.js';
 import { Zip } from './zip.js';
 import { activeAnchors, segments, srcToOut, outToSrc, outputDuration, beatPoints, hasBeatMap } from './beatmap.js';
 
+// Resolves to true if a real seek happened, false if the video was already at `t`.
 function seek(video, t) {
   return new Promise(res => {
-    const done = () => { video.removeEventListener('seeked', done); res(); };
+    // Setting currentTime to the value it's already at does NOT fire 'seeked' in some
+    // engines (incl. WKWebView), which would hang this forever waiting for an event that
+    // never comes — exactly what happens when export starts on the frame the playhead is
+    // already parked on. Short-circuit that case, and add a safety timeout so a slow/failed
+    // seek (e.g. a large 4K source) can never wedge the whole export.
+    if (Math.abs(video.currentTime - t) < 1e-3) { res(false); return; }
+    let done;
+    const timeout = setTimeout(() => { video.removeEventListener('seeked', done); res(true); }, 3000);
+    done = () => { clearTimeout(timeout); video.removeEventListener('seeked', done); res(true); };
     video.addEventListener('seeked', done);
     video.currentTime = t;
+  });
+}
+
+// 'seeked' fires when the seek is logically complete, but the browser hasn't necessarily
+// PRESENTED the new decoded frame yet — capturing (texImage2D/drawImage) right after
+// 'seeked' can read stale pixels (often frame 0's), which is exactly "masks move correctly
+// but the picture never changes." requestVideoFrameCallback fires only once the specific
+// frame has actually been handed to the compositor. Only call this after a REAL seek —
+// if nothing moved, there's nothing new to present and it would wait forever; a short
+// safety timeout guards against rVFC not firing for any other reason too.
+function waitForFramePresented(video) {
+  return new Promise(res => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; res(); } };
+    const timeout = setTimeout(finish, 500);
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      video.requestVideoFrameCallback(() => { clearTimeout(timeout); finish(); });
+    } else {
+      requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timeout); finish(); }));
+    }
   });
 }
 
@@ -21,6 +50,18 @@ function download(blob, name) {
   a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+// Chunked base64 encode — spreading a whole large Uint8Array into String.fromCharCode
+// blows the call stack, so encode in 32KB pieces instead.
+export function arrayBufferToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
 }
 
 export function buildMeta(frameCount, extraMeta) {
@@ -65,36 +106,51 @@ export function buildMeta(frameCount, extraMeta) {
 
 // Frame-step export following the retiming map: output frame i shows source time
 // outToSrc(i/fps), so beat-stretched timing is baked into the frames themselves.
-export async function exportPngSequence(pipeline, { onProgress, shouldCancel, onFrame, drawFrame, extraFrames, extraMeta }) {
+//
+// Desktop app (pywebview present): writes loose files+folders straight to a chosen
+// directory via the Python bridge — no zip. `writeFile(relPath, arrayBuffer)` is supplied
+// by the caller (already bound to the chosen base folder) when running on desktop.
+// Browser-only fallback (no filesystem access beyond single-file downloads): bundles
+// everything into a .zip and triggers a normal browser download, as before.
+export async function exportPngSequence(pipeline, { onProgress, shouldCancel, onFrame, drawFrame, extraFrames, extraMeta, writeFile, exportDir }) {
   const v = state.video;
   const wasRate = v.playbackRate;
   v.pause();
   const outDur = outputDuration();
   const frameCount = Math.max(1, Math.round(outDur * state.fps));
-  const zip = new Zip();
+  const zip = writeFile ? null : new Zip();
   const pad = n => String(n).padStart(4, '0');
+  const put = async (name, buf) => { if (writeFile) await writeFile(name, buf); else zip.add(name, buf); };
 
   for (let i = 0; i < frameCount; i++) {
     if (shouldCancel && shouldCancel()) { v.playbackRate = wasRate; return null; }
     const srcT = outToSrc(i / state.fps);
-    await seek(v, Math.max(0, Math.min(srcT, state.duration - 1e-3)));
+    const didSeek = await seek(v, Math.max(0, Math.min(srcT, state.duration - 1e-3)));
+    if (didSeek) await waitForFramePresented(v);  // don't capture until the new frame is painted
     if (onFrame) await onFrame(v);
     if (drawFrame) drawFrame(v, srcT); else pipeline.render(v, state);
     const blob = await pipeline.toBlob();
     const buf = await blob.arrayBuffer();
-    zip.add(`frames/frame_${pad(i)}.png`, buf);
+    await put(`frames/frame_${pad(i)}.png`, buf);
     // per-object mask sequences (hand, card…) for use in the game engine
     if (extraFrames) {
-      for (const f of await extraFrames(srcT, i)) zip.add(f.name, f.buf);
+      for (const f of await extraFrames(srcT, i)) await put(f.name, f.buf);
     }
     onProgress(i / frameCount, `frame ${i + 1} / ${frameCount}`);
   }
 
   const meta = buildMeta(frameCount, extraMeta);
-  zip.add('cardbeat.json', new TextEncoder().encode(JSON.stringify(meta, null, 2)));
-  onProgress(1, 'packaging zip');
-  const base = (state.videoName || 'clip').replace(/\.[^.]+$/, '');
-  download(zip.blob(), `${base}_cardbeat.zip`);
+  const metaBuf = new TextEncoder().encode(JSON.stringify(meta, null, 2)).buffer;
+  if (writeFile) {
+    onProgress(1, 'writing cardbeat.json');
+    await put('cardbeat.json', metaBuf);
+    meta.exportDir = exportDir;
+  } else {
+    zip.add('cardbeat.json', metaBuf);
+    onProgress(1, 'packaging zip');
+    const base = (state.videoName || 'clip').replace(/\.[^.]+$/, '');
+    download(zip.blob(), `${base}_cardbeat.zip`);
+  }
   v.playbackRate = wasRate;
   return meta;
 }

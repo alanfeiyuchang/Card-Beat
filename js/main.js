@@ -4,7 +4,7 @@ import { Timeline } from './timeline.js';
 import { CropTool } from './crop.js';
 import { History } from './history.js';
 import { loadWaveform } from './audio.js';
-import { exportPngSequence, exportWebm } from './exporters.js';
+import { exportPngSequence, exportWebm, arrayBufferToBase64 } from './exporters.js';
 import { Layers, STYLE_FIELDS } from './layers.js';
 import { loadSettings, saveSettings, saveSettingsDebounced, loadPresets, savePreset, deletePreset } from './persist.js';
 import { activeAnchors, segments, rateAt, srcToOut, outputDuration, beatPoints, hasBeatMap } from './beatmap.js';
@@ -186,11 +186,18 @@ $('videoInput').addEventListener('change', async e => {
   await openVideo(URL.createObjectURL(file), file.name, file);
 });
 // On desktop, Import video uses the native picker so the Python side (SAM) gets the real
-// file path — one button opens the clip for both the editor and segmentation.
-$('importBtn').addEventListener('click', e => {
-  if (!IS_DESKTOP()) return;                     // browser: fall through to the file input
-  e.preventDefault();
-  pickVideoDesktop().catch(err => { $('fileName').textContent = 'open failed: ' + err.message; });
+// file path — one button opens the clip for both the editor and segmentation. This is a
+// plain <button> (not a <label> wrapping the hidden input) — relying on preventDefault()
+// inside a label's click handler to stop it from ALSO forwarding to the wrapped file input
+// is exactly the kind of thing that can differ between browser engines (tested fine in
+// Chrome, but the desktop app runs WKWebView/Safari's engine), and two native file dialogs
+// racing looks exactly like the app being frozen. A plain button has no such ambiguity.
+$('importBtn').addEventListener('click', () => {
+  if (IS_DESKTOP()) {
+    pickVideoDesktop().catch(err => { $('fileName').textContent = 'open failed: ' + err.message; });
+  } else {
+    $('videoInput').click();                     // browser: trigger the (now unwrapped) file input
+  }
 });
 
 // ---------- transport ----------
@@ -448,8 +455,25 @@ async function layerMaskFiles(srcT, i) {
 
 $('exportPngBtn').addEventListener('click', async () => {
   if (!state.video) return;
+
+  // Desktop app: write loose files+folders straight to a chosen directory (no zip).
+  // Browser-only: no real filesystem access, so fall back to a .zip download.
+  let writeFile = null, exportDir = null;
+  if (IS_DESKTOP()) {
+    let chosenParent;
+    try { chosenParent = await window.pywebview.api.pick_export_folder(); }
+    catch (e) { $('exportStatus').textContent = 'folder picker error: ' + e.message; return; }
+    if (!chosenParent) return;   // user cancelled — don't open the modal at all
+    const base = (state.videoName || 'clip').replace(/\.[^.]+$/, '');
+    exportDir = `${chosenParent}/${base}_cardbeat`;
+    writeFile = async (relPath, buf) => {
+      const res = await window.pywebview.api.write_export_file(exportDir, relPath, arrayBufferToBase64(buf));
+      if (res && res.error) throw new Error(`writing ${relPath}: ${res.error}`);
+    };
+  }
+
   state.video.pause(); state.playing = false; $('playBtn').textContent='▶';
-  openModal('Exporting PNG sequence…');
+  openModal(writeFile ? 'Exporting files…' : 'Exporting PNG sequence…');
   const drawFrame = layers.has() ? (v, srcT) => renderComposited(srcT) : null;
   const extraFrames = layers.has() ? layerMaskFiles : null;
   // ship per-layer styles + mask dir so the game engine can use each object separately
@@ -459,8 +483,21 @@ $('exportPngBtn').addEventListener('click', async () => {
         maskDir: `masks/${L.slug}`, style: L.style })) }
     : null;
   try {
-    const meta = await exportPngSequence(pipeline, { onProgress: prog, shouldCancel: () => cancelExport, drawFrame, extraFrames, extraMeta });
-    if (meta) { prog(1, `done — ${meta.output.frameCount} frames`); setTimeout(closeModal, 700); }
+    const meta = await exportPngSequence(pipeline, { onProgress: prog, shouldCancel: () => cancelExport, drawFrame, extraFrames, extraMeta, writeFile, exportDir });
+    if (meta) {
+      if (exportDir) {
+        prog(1, `done — ${meta.output.frameCount} frames → ${exportDir}`);
+        $('exportStatus').innerHTML = `done — ${meta.output.frameCount} frames<br>${exportDir}`;
+        const reveal = document.createElement('button');
+        reveal.className = 'btn small'; reveal.textContent = 'Reveal in Finder';
+        reveal.style.marginTop = '8px';
+        reveal.addEventListener('click', () => window.pywebview.api.reveal_in_finder(exportDir));
+        $('exportStatus').appendChild(document.createElement('br'));
+        $('exportStatus').appendChild(reveal);
+      } else {
+        prog(1, `done — ${meta.output.frameCount} frames`); setTimeout(closeModal, 700);
+      }
+    }
   } catch (e) { $('exportStatus').textContent = 'error: ' + e.message; }
 });
 
@@ -601,6 +638,30 @@ $('samModel').addEventListener('change', e => {
 $('samConcepts').addEventListener('change', saveSettings);
 $('samFps').addEventListener('change', saveSettings);
 
+// Freezes/unfreezes the SAM controls and shows/hides the Cancel button. Both "Preview
+// frame" and "Track whole clip" run as background Python jobs behind the same mechanism,
+// since SAM3 previews alone can take 45-77s on this hardware — long enough to need an exit.
+function setSamRunning(running) {
+  $('samPanel').dataset.running = running ? '1' : '0';
+  $('samCancel').hidden = !running;
+  if (running) $('samBar').style.width = '0%';
+}
+// Polls get_progress() until the job settles (done/error/cancelled), then hands the
+// final stage + get_result() to the caller. Un-freezes the panel before calling back.
+function pollSamJob(onSettled) {
+  samPoll = setInterval(async () => {
+    let p; try { p = await window.pywebview.api.get_progress(); } catch { return; }
+    if (!p) return;
+    if (p.total) $('samBar').style.width = Math.round((p.frame / p.total) * 100) + '%';
+    $('samStatus').textContent = `${p.stage} ${p.frame}/${p.total}`;
+    if (p.stage !== 'done' && p.stage !== 'error' && p.stage !== 'cancelled') return;
+    clearInterval(samPoll); samPoll = null;
+    setSamRunning(false);
+    const result = await window.pywebview.api.get_result();
+    onSettled(p.stage, result);
+  }, 300);
+}
+
 async function runSam() {
   if (!state.video) { $('samStatus').textContent = 'open a video first'; return; }
   const concepts = parseConcepts();
@@ -616,35 +677,30 @@ async function runSam() {
   for (const c of concepts) if (samPromptTime[c] != null) promptTimes[c] = samPromptTime[c];
   const trimStart = state.trimIn > 0.05 ? state.trimIn : null;
   const trimEnd = state.trimOut < state.duration - 0.05 ? state.trimOut : null;
-  $('samRun').disabled = true; $('samBar').style.width = '0%'; $('samStatus').textContent = 'starting…';
+  setSamRunning(true); $('samStatus').textContent = 'starting…';
   let started;
   try { started = await window.pywebview.api.run_sam(concepts, fps, model, points, trimStart, trimEnd, promptTimes); }
-  catch (e) { $('samStatus').textContent = 'bridge error: ' + e.message; $('samRun').disabled = false; return; }
-  if (started && started.error) { $('samStatus').textContent = 'error: ' + started.error; $('samRun').disabled = false; return; }
-  // background job runs in Python; poll progress until done/error
-  samPoll = setInterval(async () => {
-    let p; try { p = await window.pywebview.api.get_progress(); } catch { return; }
-    if (!p) return;
-    if (p.total) $('samBar').style.width = Math.round((p.frame / p.total) * 100) + '%';
-    $('samStatus').textContent = `${p.stage} ${p.frame}/${p.total}`;
-    if (p.stage !== 'done' && p.stage !== 'error') return;
-    clearInterval(samPoll); samPoll = null;
-    const manifest = await window.pywebview.api.get_result();
-    $('samRun').disabled = false;
+  catch (e) { $('samStatus').textContent = 'bridge error: ' + e.message; setSamRunning(false); return; }
+  if (started && started.error) { $('samStatus').textContent = 'error: ' + started.error; setSamRunning(false); return; }
+  pollSamJob((stage, manifest) => {
+    if (stage === 'cancelled') { $('samStatus').textContent = 'cancelled'; return; }
     if (!manifest || manifest.error) {
       $('samStatus').textContent = 'error: ' + (manifest ? manifest.error : 'no result');
       $('samBar').style.width = '0%'; return;
     }
     $('samBar').style.width = '100%';
-    const n = await layers.loadFromManifest(manifest, manifest.baseUrl);
-    state.keyMode = 0; $('keyMode').value = '0';
-    buildLayerButtons(); $('layerPanel').hidden = false;
-    if (n) selectLayer(layers.layers[0].slug);
-    $('samStatus').textContent = `done — ${n} object layer(s)`;
-  }, 300);
+    layers.loadFromManifest(manifest, manifest.baseUrl).then(n => {
+      state.keyMode = 0; $('keyMode').value = '0';
+      buildLayerButtons(); $('layerPanel').hidden = false;
+      if (n) selectLayer(layers.layers[0].slug);
+      $('samStatus').textContent = `done — ${n} object layer(s)`;
+    });
+  });
 }
 function resetSam() {
   if (samPoll) { clearInterval(samPoll); samPoll = null; }
+  window.pywebview.api.cancel_sam().catch(() => {});   // in case a job is still running
+  setSamRunning(false);
   layers.clear(); $('layerPanel').hidden = true; $('layerButtons').innerHTML = '';
   pipeline.clearMask();
   samPoints = {}; samPromptTime = {}; drawPoints();
@@ -652,7 +708,6 @@ function resetSam() {
   $('samNextObj').hidden = true; $('samClearPoints').hidden = true;
   $('samPointsStatus').textContent = 'no points';
   $('samBar').style.width = '0%'; $('samStatus').textContent = '—';
-  $('samRun').disabled = false;
 }
 // quick single-frame preview so you can confirm the points before the slow full track
 async function previewSam() {
@@ -669,27 +724,35 @@ async function previewSam() {
     for (const c of concepts) if (samPromptTime[c] != null) promptTimes[c] = samPromptTime[c];
   }
   const frameTime = state.video.currentTime;   // SAM3 (text) previews the shown frame
-  $('samPreview').disabled = true;
+  setSamRunning(true);
   $('samStatus').textContent = isSam2 ? 'previewing marked frame…'
     : 'previewing with SAM 3 text (slow — first run downloads/loads the model)…';
-  let res;
-  try { res = await window.pywebview.api.preview_sam(concepts, points, promptTimes, model, frameTime); }
-  catch (e) { $('samStatus').textContent = 'bridge error: ' + e.message; $('samPreview').disabled = false; return; }
-  $('samPreview').disabled = false;
-  if (!res || res.error) { $('samStatus').textContent = 'error: ' + (res ? res.error : 'no result'); return; }
-  const n = await layers.loadPreview(res.items);
-  state.keyMode = 0; $('keyMode').value = '0';
-  buildLayerButtons(); $('layerPanel').hidden = false;
-  if (n) {
-    selectLayer(layers.layers[0].slug);
-    const t0 = res.items[0] ? res.items[0].time : frameTime;
-    if (state.video) state.video.currentTime = t0;
-  }
-  $('samStatus').textContent = `preview — check each object mask, then “Track whole clip”`;
+  let started;
+  try { started = await window.pywebview.api.preview_sam(concepts, points, promptTimes, model, frameTime); }
+  catch (e) { $('samStatus').textContent = 'bridge error: ' + e.message; setSamRunning(false); return; }
+  if (started && started.error) { $('samStatus').textContent = 'error: ' + started.error; setSamRunning(false); return; }
+  pollSamJob((stage, res) => {
+    if (stage === 'cancelled') { $('samStatus').textContent = 'cancelled'; return; }
+    if (!res || res.error) { $('samStatus').textContent = 'error: ' + (res ? res.error : 'no result'); return; }
+    layers.loadPreview(res.items).then(n => {
+      state.keyMode = 0; $('keyMode').value = '0';
+      buildLayerButtons(); $('layerPanel').hidden = false;
+      if (n) {
+        selectLayer(layers.layers[0].slug);
+        const t0 = res.items[0] ? res.items[0].time : frameTime;
+        if (state.video) state.video.currentTime = t0;
+      }
+      $('samStatus').textContent = `preview — check each object mask, then “Track whole clip”`;
+    });
+  });
 }
 $('samPreview').addEventListener('click', previewSam);
 $('samRun').addEventListener('click', runSam);
 $('samReset').addEventListener('click', resetSam);
+$('samCancel').addEventListener('click', async () => {
+  $('samStatus').textContent = 'cancelling…';
+  try { await window.pywebview.api.cancel_sam(); } catch (e) { $('samStatus').textContent = 'cancel bridge error: ' + e.message; }
+});
 
 // reveal desktop-only controls once the bridge is ready
 function enableDesktop() {
