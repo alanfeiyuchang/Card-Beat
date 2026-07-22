@@ -1,0 +1,99 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7819c121d815a4ec287e474ef5b02a31, type: 3}
+  m_Name: FanChart
+  m_EditorClassIdentifier: Assembly-CSharp::CardBeat.RhythmChart
+  song: {fileID: 8300000, guid: 2b9c6184aa3114ee184f6c13aa27b5e8, type: 3}
+  bpm: 120
+  offsetSec: 0.5
+  leadInSec: 2
+  perfectWindow: 0.06
+  goodWindow: 0.13
+  startingCards: 12
+  cardsPerMiss: 2
+  clipEvents:
+  - clip: {fileID: 11400000, guid: 044b87dfd87654e85bbefc336bdf7eb9, type: 2}
+    startSec: 0.5
+    autoNotes: 1
+  - clip: {fileID: 11400000, guid: 044b87dfd87654e85bbefc336bdf7eb9, type: 2}
+    startSec: 3.9333334
+    autoNotes: 1
+  - clip: {fileID: 11400000, guid: 044b87dfd87654e85bbefc336bdf7eb9, type: 2}
+    startSec: 7.366667
+    autoNotes: 1
+  - clip: {fileID: 11400000, guid: 044b87dfd87654e85bbefc336bdf7eb9, type: 2}
+    startSec: 10.8
+    autoNotes: 1
+  - clip: {fileID: 11400000, guid: 044b87dfd87654e85bbefc336bdf7eb9, type: 2}
+    startSec: 14.233334
+    autoNotes: 1
+  manualNotes:
+  - timeSec: 1
+    accent: 1
+  - timeSec: 1.5
+    accent: 1
+  - timeSec: 2
+    accent: 1
+  - timeSec: 2.5
+    accent: 1
+  - timeSec: 3
+    accent: 1
+  - timeSec: 3.5
+    accent: 1
+  - timeSec: 4.5
+    accent: 1
+  - timeSec: 5
+    accent: 1
+  - timeSec: 5.5
+    accent: 1
+  - timeSec: 6
+    accent: 1
+  - timeSec: 6.5
+    accent: 1
+  - timeSec: 7
+    accent: 1
+  - timeSec: 7.75
+    accent: 1
+  - timeSec: 8.25
+    accent: 1
+  - timeSec: 8.75
+    accent: 1
+  - timeSec: 9.25
+    accent: 1
+  - timeSec: 9.75
+    accent: 1
+  - timeSec: 10.25
+    accent: 1
+  - timeSec: 11.25
+    accent: 1
+  - timeSec: 11.75
+    accent: 1
+  - timeSec: 12.25
+    accent: 1
+  - timeSec: 12.75
+    accent: 1
+  - timeSec: 13.25
+    accent: 1
+  - timeSec: 13.75
+    accent: 1
+  - timeSec: 14.75
+    accent: 1
+  - timeSec: 15.25
+    accent: 1
+  - timeSec: 15.75
+    accent: 1
+  - timeSec: 16.25
+    accent: 1
+  - timeSec: 16.75
+    accent: 1
+  - timeSec: 17.25
+    accent: 1

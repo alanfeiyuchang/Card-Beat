@@ -1,0 +1,36 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7819c121d815a4ec287e474ef5b02a31, type: 3}
+  m_Name: DemoChart
+  m_EditorClassIdentifier: Assembly-CSharp::CardBeat.RhythmChart
+  song: {fileID: 8300000, guid: 2b9c6184aa3114ee184f6c13aa27b5e8, type: 3}
+  bpm: 100
+  offsetSec: 0
+  leadInSec: 2
+  perfectWindow: 0.06
+  goodWindow: 0.13
+  startingCards: 20
+  cardsPerMiss: 2
+  clipEvents:
+  - clip: {fileID: 11400000, guid: 4691f893262b84b36988a4f5718e81e7, type: 2}
+    startSec: 0
+    autoNotes: 1
+  - clip: {fileID: 11400000, guid: 4691f893262b84b36988a4f5718e81e7, type: 2}
+    startSec: 9.6
+    autoNotes: 1
+  - clip: {fileID: 11400000, guid: 4691f893262b84b36988a4f5718e81e7, type: 2}
+    startSec: 19.2
+    autoNotes: 1
+  - clip: {fileID: 11400000, guid: 4691f893262b84b36988a4f5718e81e7, type: 2}
+    startSec: 28.800001
+    autoNotes: 1
+  manualNotes: []

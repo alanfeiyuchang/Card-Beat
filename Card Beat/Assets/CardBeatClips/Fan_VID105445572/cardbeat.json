@@ -1,0 +1,138 @@
+{
+  "tool": "Card Beat",
+  "version": 2,
+  "source": "VID_20260718_105445572.mp4",
+  "output": {
+    "width": 512,
+    "height": 288,
+    "fps": 30,
+    "frameCount": 89,
+    "format": "png-sequence-rgba"
+  },
+  "trim": {
+    "inSec": 0,
+    "outSec": 2.9576
+  },
+  "playbackRate": 1,
+  "durationOutSec": 2.9576,
+  "crop": {
+    "x": 0,
+    "y": 0,
+    "w": 1,
+    "h": 1
+  },
+  "beat": {
+    "secondsPerBeat": 2,
+    "bpm": 30,
+    "anchorsSrcSec": [],
+    "anchorsOutSec": [],
+    "segments": []
+  },
+  "beatsSec": [],
+  "beatsSourceSec": [],
+  "beatsAccent": [],
+  "shader": {
+    "keyMode": 0,
+    "keyColor": [
+      0,
+      1,
+      0
+    ],
+    "keyThresh": 0.35,
+    "keySoft": 0.1,
+    "spill": 0,
+    "toon": true,
+    "levels": 3,
+    "edgeThresh": 0.18,
+    "edgeThick": 3.3,
+    "edgeGain": 1,
+    "edgeColor": [
+      0,
+      0,
+      0
+    ],
+    "tint": [
+      0.55,
+      0.8,
+      1
+    ],
+    "outline": false,
+    "outlineColor": [
+      1,
+      1,
+      1
+    ],
+    "outlineThick": 8,
+    "sat": 1.5,
+    "bright": 0.05,
+    "contrast": 1.3
+  },
+  "layers": [
+    {
+      "name": "hand",
+      "slug": "hand",
+      "visible": true,
+      "maskDir": "masks/hand",
+      "style": {
+        "toon": true,
+        "levels": 3,
+        "edgeThresh": 0.34,
+        "edgeThick": 2.2,
+        "edgeGain": 1,
+        "edgeColor": [
+          0,
+          0,
+          0
+        ],
+        "tint": [
+          1,
+          1,
+          1
+        ],
+        "outline": true,
+        "outlineColor": [
+          1,
+          1,
+          1
+        ],
+        "outlineThick": 12,
+        "sat": 1.5,
+        "bright": 0.05,
+        "contrast": 1.3
+      }
+    },
+    {
+      "name": "playing card",
+      "slug": "playing_card",
+      "visible": true,
+      "maskDir": "masks/playing_card",
+      "style": {
+        "toon": true,
+        "levels": 3,
+        "edgeThresh": 0.18,
+        "edgeThick": 3.3,
+        "edgeGain": 1,
+        "edgeColor": [
+          0,
+          0,
+          0
+        ],
+        "tint": [
+          0.55,
+          0.8,
+          1
+        ],
+        "outline": false,
+        "outlineColor": [
+          1,
+          1,
+          1
+        ],
+        "outlineThick": 8,
+        "sat": 1.5,
+        "bright": 0.05,
+        "contrast": 1.3
+      }
+    }
+  ]
+}

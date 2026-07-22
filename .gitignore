@@ -22,7 +22,8 @@ node_modules/
 
 # Stray/unrelated large artifacts (not part of Card Beat)
 mobileclip_blt.ts
-/Card Beat/
+
+# The Unity companion project has its own .gitignore (Library/Temp/Logs/etc.)
 
 # OS / editor
 .DS_Store
