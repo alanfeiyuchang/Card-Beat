@@ -13,6 +13,7 @@ The SAM step needs model weights (downloaded by ultralytics on first run) and wo
 Apple Silicon (MPS) or CPU. NOT executed in the dev sandbox — validate locally.
 """
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -29,7 +30,16 @@ PORT = 8777
 
 
 class Handler(SimpleHTTPRequestHandler):
-    """Serve the app from ROOT, and /media/* from the temp media dir (video + masks)."""
+    """Serve the app from ROOT, and /media/* from the temp media dir (video + masks).
+
+    Adds HTTP Range support. This is NOT optional: WKWebView (and browsers generally) treat a
+    served <video> as SEEKABLE only if the server honours byte-range requests. Without it,
+    setting video.currentTime silently does nothing — so PNG export, which seeks the video to
+    each output frame, was capturing frame 0 for the whole clip (masks advanced from computed
+    time, but the picture never did). SimpleHTTPRequestHandler has no Range support, hence this.
+    """
+    protocol_version = "HTTP/1.1"
+
     def translate_path(self, path):
         clean = path.split("?", 1)[0].split("#", 1)[0]
         if clean.startswith("/media/"):
@@ -38,6 +48,58 @@ class Handler(SimpleHTTPRequestHandler):
 
     def log_message(self, *a):  # quiet
         pass
+
+    def send_head(self):
+        rng = self.headers.get("Range")
+        path = self.translate_path(self.path)
+        if not rng or not os.path.isfile(path):
+            self._range_remaining = None
+            return super().send_head()
+        m = re.match(r"bytes=(\d*)-(\d*)\s*$", rng.strip())
+        if not m:
+            self._range_remaining = None
+            return super().send_head()
+        try:
+            size = os.path.getsize(path)
+            start_s, end_s = m.group(1), m.group(2)
+            if start_s == "":                       # suffix range: last N bytes
+                start, end = max(0, size - int(end_s)), size - 1
+            else:
+                start = int(start_s)
+                end = int(end_s) if end_s else size - 1
+            end = min(end, size - 1)
+            if start >= size or start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                self._range_remaining = None
+                return None
+            f = open(path, "rb")
+            f.seek(start)
+            self.send_response(206)
+            self.send_header("Content-Type", self.guess_type(path))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header("Content-Length", str(end - start + 1))
+            self.end_headers()
+            self._range_remaining = end - start + 1
+            return f
+        except OSError:
+            self._range_remaining = None
+            return super().send_head()
+
+    def copyfile(self, source, outputfile):
+        remaining = getattr(self, "_range_remaining", None)
+        if remaining is None:
+            return super().copyfile(source, outputfile)
+        self._range_remaining = None
+        while remaining > 0:
+            chunk = source.read(min(64 * 1024, remaining))
+            if not chunk:
+                break
+            outputfile.write(chunk)
+            remaining -= len(chunk)
 
 
 def serve():

@@ -27,3 +27,6 @@ mobileclip_blt.ts
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Export outputs (generated frames/masks — regenerate from source, don't track)
+resources/clips/
