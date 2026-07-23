@@ -49,6 +49,13 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
 
+    def end_headers(self):
+        # Never let WKWebView serve stale JS/HTML from cache — otherwise editing js/*.js and
+        # relaunching can still run the OLD code, which makes "did my fix take effect?" impossible
+        # to reason about. Force a fresh fetch of every asset on each load.
+        self.send_header("Cache-Control", "no-store, must-revalidate")
+        super().end_headers()
+
     def send_head(self):
         rng = self.headers.get("Range")
         path = self.translate_path(self.path)

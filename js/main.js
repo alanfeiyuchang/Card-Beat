@@ -68,12 +68,16 @@ function saveActiveStyle() {
   const L = layers.get(layers.active);
   for (const k of STYLE_FIELDS) L.style[k] = Array.isArray(state[k]) ? state[k].slice() : state[k];
 }
-function renderComposited(t) {
+// `src` overrides the frame source (defaults to the live <video>). Export passes a per-frame
+// 2D-canvas snapshot of the seeked frame, since WKWebView's WebGL texImage2D(<video>) samples
+// the stale composited frame on a paused video (see exporters.js).
+function renderComposited(t, src) {
+  const vsrc = src || state.video;
   saveActiveStyle();
   let first = true;
   if (state.showBackground) {
     pipeline.clearMask();
-    pipeline.render(state.video, { ...state, tint: [1, 1, 1], outline: false }, true);
+    pipeline.render(vsrc, { ...state, tint: [1, 1, 1], outline: false }, true);
     first = false;
   }
   for (const L of layers.layers) {
@@ -81,7 +85,7 @@ function renderComposited(t) {
     const mask = layers.maskAt(L.slug, t);
     if (!mask) continue;
     pipeline.setMask(mask);
-    pipeline.render(state.video, { ...state, ...L.style }, first);
+    pipeline.render(vsrc, { ...state, ...L.style }, first);
     first = false;
   }
   if (first) pipeline.clearCanvas();
@@ -110,8 +114,12 @@ function tickMetronome(curT) {
   lastBeatCheckT = curT;
 }
 
+// While an export is running the video is PLAYING (to keep the decoder hot) and the export
+// loop owns the canvas — this preview loop must not redraw between the export's render and its
+// toBlob(), or it would capture a wrong/live frame. `exporting` parks it for the duration.
+let exporting = false;
 function frame() {
-  if (state.video && state.video.readyState >= 2) {
+  if (!exporting && state.video && state.video.readyState >= 2) {
     const t = state.video.currentTime;
     if (state.playing) {
       // beat-anchored segments play at their own speed so anchors land on beats
@@ -142,9 +150,19 @@ function updateTimeLabel() {
 
 // ---------- import ----------
 async function openVideo(url, name, audioBlob) {
+  // Remove any previous clip's element from the DOM before swapping in the new one.
+  if (state.video && state.video.parentNode) state.video.parentNode.removeChild(state.video);
   const v = document.createElement('video');
   v.src = url;
   v.muted = true; v.playsInline = true; v.loop = false; v.crossOrigin = 'anonymous';
+  // MUST be in the render tree (not detached, not display:none/visibility:hidden). WebKit/
+  // WKWebView only refreshes a PAUSED video's decoded frame on seek when the element is
+  // actually composited; a detached element stays pinned on its last painted frame, so the
+  // PNG export (which seeks a paused video per output frame) froze every frame on the
+  // playhead position while masks advanced. Park it offscreen but still rendered.
+  v.style.cssText = 'position:fixed;left:0;bottom:0;width:2px;height:2px;opacity:0.01;' +
+    'pointer-events:none;z-index:-1;';
+  document.body.appendChild(v);
   await new Promise(r => v.addEventListener('loadedmetadata', r, { once: true }));
   await v.play().catch(()=>{}); v.pause(); v.currentTime = 0;
 
@@ -474,7 +492,7 @@ $('exportPngBtn').addEventListener('click', async () => {
 
   state.video.pause(); state.playing = false; $('playBtn').textContent='▶';
   openModal(writeFile ? 'Exporting files…' : 'Exporting PNG sequence…');
-  const drawFrame = layers.has() ? (v, srcT) => renderComposited(srcT) : null;
+  const drawFrame = layers.has() ? (v, srcT) => renderComposited(srcT, v) : null;
   const extraFrames = layers.has() ? layerMaskFiles : null;
   // ship per-layer styles + mask dir so the game engine can use each object separately
   const extraMeta = layers.has()
@@ -482,6 +500,7 @@ $('exportPngBtn').addEventListener('click', async () => {
         name: L.name, slug: L.slug, visible: L.visible !== false,
         maskDir: `masks/${L.slug}`, style: L.style })) }
     : null;
+  exporting = true;   // park the preview render loop so it can't corrupt frame captures
   try {
     const meta = await exportPngSequence(pipeline, { onProgress: prog, shouldCancel: () => cancelExport, drawFrame, extraFrames, extraMeta, writeFile, exportDir });
     if (meta) {
@@ -499,6 +518,7 @@ $('exportPngBtn').addEventListener('click', async () => {
       }
     }
   } catch (e) { $('exportStatus').textContent = 'error: ' + e.message; }
+  finally { exporting = false; }
 });
 
 $('exportWebmBtn').addEventListener('click', async () => {

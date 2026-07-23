@@ -115,20 +115,47 @@ export function buildMeta(frameCount, extraMeta) {
 export async function exportPngSequence(pipeline, { onProgress, shouldCancel, onFrame, drawFrame, extraFrames, extraMeta, writeFile, exportDir }) {
   const v = state.video;
   const wasRate = v.playbackRate;
-  v.pause();
+  const wasLoop = v.loop;
+  // Keep the decoder HOT for the whole export. WebKit releases the decode pipeline of an idle,
+  // paused, off-screen <video> after a short while; past that point seeks still move
+  // currentTime (a plain property) but NO new frame is decoded, so every remaining frame froze
+  // on one picture while the time-indexed masks kept advancing (the "content stops updating
+  // after ~frame 61" bug). A *playing* element stays actively decoded — we still seek to each
+  // target frame and grab the presented frame. loop=true so it can't stall at the clip end.
+  v.loop = true;
+  v.playbackRate = 1;
+  try { await v.play(); } catch {}
+  const restore = () => { try { v.pause(); } catch {} v.loop = wasLoop; v.playbackRate = wasRate; };
   const outDur = outputDuration();
   const frameCount = Math.max(1, Math.round(outDur * state.fps));
   const zip = writeFile ? null : new Zip();
   const pad = n => String(n).padStart(4, '0');
   const put = async (name, buf) => { if (writeFile) await writeFile(name, buf); else zip.add(name, buf); };
 
+  // WKWebView quirk: WebGL texImage2D(<video>) on a PAUSED video keeps sampling the last
+  // COMPOSITED frame, not the freshly-seeked decoded one — so every exported frame froze on
+  // the playhead position the export started from, while the masks (indexed by computed time)
+  // advanced normally. That's the "correct mask, wrong/identical content" bug. A 2D-canvas
+  // drawImage(video) DOES read the current decoded frame reliably, so we snapshot each seeked
+  // frame here and hand the snapshot to the renderer instead of the live <video> element.
+  const snap = document.createElement('canvas');
+  const snapCtx = snap.getContext('2d');
+
   for (let i = 0; i < frameCount; i++) {
-    if (shouldCancel && shouldCancel()) { v.playbackRate = wasRate; return null; }
+    if (shouldCancel && shouldCancel()) { restore(); return null; }
     const srcT = outToSrc(i / state.fps);
     const didSeek = await seek(v, Math.max(0, Math.min(srcT, state.duration - 1e-3)));
-    if (didSeek) await waitForFramePresented(v);  // don't capture until the new frame is painted
+    if (didSeek) await waitForFramePresented(v);  // let the decode settle before snapshotting
     if (onFrame) await onFrame(v);
-    if (drawFrame) drawFrame(v, srcT); else pipeline.render(v, state);
+    let frameSrc = v;
+    if (v.videoWidth) {
+      if (snap.width !== v.videoWidth || snap.height !== v.videoHeight) {
+        snap.width = v.videoWidth; snap.height = v.videoHeight;
+      }
+      snapCtx.drawImage(v, 0, 0, snap.width, snap.height);
+      frameSrc = snap;   // upload the fresh decoded frame, not the stale composited <video>
+    }
+    if (drawFrame) drawFrame(frameSrc, srcT); else pipeline.render(frameSrc, state);
     const blob = await pipeline.toBlob();
     const buf = await blob.arrayBuffer();
     await put(`frames/frame_${pad(i)}.png`, buf);
@@ -151,7 +178,7 @@ export async function exportPngSequence(pipeline, { onProgress, shouldCancel, on
     const base = (state.videoName || 'clip').replace(/\.[^.]+$/, '');
     download(zip.blob(), `${base}_cardbeat.zip`);
   }
-  v.playbackRate = wasRate;
+  restore();
   return meta;
 }
 
